@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["lamport", "wots", "xmss", "compare"]
+
+[workspace.dependencies]
+sha2 = "0.10"
+rand = "0.8"
