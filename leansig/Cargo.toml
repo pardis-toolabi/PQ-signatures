@@ -1,0 +1,8 @@
+[package]
+name = "leansig"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+poseidon2 = { path = "../poseidon2" }
+rand = { workspace = true }
