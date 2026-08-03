@@ -54,7 +54,7 @@
 
 use crate::field::Fp;
 use crate::merkle::{node_width, MerklePath, MerkleTree};
-use crate::transcript::{xof, Digest, Transcript, CAPACITY};
+use crate::transcript::{xof, Digest, Transcript};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Parameters {
@@ -465,15 +465,16 @@ mod tests {
         xof_digest(b"decs-test-salt", &[Fp::new(seed)])
     }
 
+    /// What one prover/verifier exchange produces: the root, the opening,
+    /// the verifier's reconstruction of `R_k` (absent if it rejected), and
+    /// the prover's own `R_k` to compare against.
+    type Exchange = (Vec<Fp>, Opening, Option<Vec<Vec<Fp>>>, Vec<Vec<Fp>>);
+
     /// One full prover/verifier exchange. `nonce` stands in for the `h3`
     /// and `h4` material of the real Fiat-Shamir chain: it changes the
     /// opening indices without touching the root or the gammas, which is
     /// what the degree test needs.
-    fn exchange(
-        parameters: &Parameters,
-        polynomials: &[Vec<Fp>],
-        nonce: &[u8],
-    ) -> (Vec<Fp>, Opening, Option<Vec<Vec<Fp>>>, Vec<Vec<Fp>>) {
+    fn exchange(parameters: &Parameters, polynomials: &[Vec<Fp>], nonce: &[u8]) -> Exchange {
         let commitment =
             Commitment::new_unchecked(*parameters, polynomials, salt(1), salt(2));
         let root = commitment.root();

@@ -9,10 +9,14 @@
 //!    field (`F_p2` over `p = 2^127 - 1`). This circuit uses Poseidon2
 //!    over BN254, because emulating a 127-bit extension field inside
 //!    BN254 would dominate the measurement and teach us nothing.
-//! 2. This covers the FRI **query-checking core** only: Merkle openings,
-//!    fold consistency between layers, the final polynomial check, and the
-//!    Fiat-Shamir replay that produces the fold challenges. It leaves out
-//!    the Legendre symbol checks, which a full verifier needs.
+//! 2. This covers the FRI **query-checking core** plus the Fiat-Shamir
+//!    replay that produces the fold challenges, plus the 128 Legendre
+//!    residuosity checks (via the paper's witness-square-root trick, see
+//!    `main`). What it still does NOT do: absorb `o_values` and `t_bits`
+//!    into the same transcript that yields the FRI challenges (the real
+//!    scheme's h1/h2 phases), derive the query indices in-circuit, or
+//!    verify the sumcheck opening consistency that `sig.rs::verify` does.
+//!    It remains a shape-measurement, not a complete verifier.
 //!
 //! # Fiat-Shamir
 //!
@@ -42,8 +46,21 @@ global FIBER: u32 = 4;
 global DEPTH: u32 = 6;
 /// Cap width in nodes, from the paper's `ceil(log2(kappa) - 1) = 4`.
 global CAP: u32 = 16;
+/// Bits needed to name a cap slot: log2(CAP).
+global CAP_BITS: u32 = 4;
+/// A full leaf index in the 1024-leaf tree: the low DEPTH bits walk the
+/// path below the cap, the high CAP_BITS bits name the cap entry.
+global INDEX_BITS: u32 = DEPTH + CAP_BITS;
 /// The fully folded polynomial is a constant at these parameters.
 global FINAL_COEFFS: u32 = 1;
+/// Legendre residuosity symbols per signature, Loquat-128's B.
+global B: u32 = 128;
+/// A fixed quadratic non-residue of the BN254 scalar field, needed by the
+/// residuosity gadget. Checked two independent ways before use: Euler's
+/// criterion, 5^((r-1)/2) == r - 1 (computed with big-integer arithmetic),
+/// and quadratic reciprocity (r ends in 7, so r = 2 mod 5, and 2 is a
+/// non-residue mod 5; 5 = 1 mod 4 makes the reciprocity sign +1).
+global ALPHA: Field = 5;
 
 // Transcript domain separators. The Rust transcript tags its hashes with
 // byte strings; distinct field constants do the same job here. The two are
@@ -125,11 +142,16 @@ fn select_fiber(values: [Field; FIBER], index: Field) -> Field {
 }
 
 /// Walks a Merkle path up to the cap layer, returning the node reached and
-/// the position it lands on.
-fn fold_to_cap(leaf: Field, index_bits: [bool; DEPTH], siblings: [Field; DEPTH]) -> (Field, Field) {
+/// the cap slot it lands on. The low DEPTH bits of the leaf index steer the
+/// walk and are consumed by it; the remaining high bits are the position in
+/// the cap layer -- in the Rust `merkle::fold_to_cap`, `position` halves
+/// once per level and ends up as exactly `index >> DEPTH`.
+fn fold_to_cap(
+    leaf: Field,
+    index_bits: [bool; INDEX_BITS],
+    siblings: [Field; DEPTH],
+) -> (Field, Field) {
     let mut node = leaf;
-    let mut position = 0;
-    let mut weight = 1;
 
     for level in 0..DEPTH {
         let go_right = index_bits[level] as Field;
@@ -140,8 +162,12 @@ fn fold_to_cap(leaf: Field, index_bits: [bool; DEPTH], siblings: [Field; DEPTH])
         let left = (1 - go_right) * node + go_right * sibling;
         let right = go_right * node + (1 - go_right) * sibling;
         node = Poseidon2::hash([left, right], 2);
+    }
 
-        position += go_right * weight;
+    let mut position = 0;
+    let mut weight = 1;
+    for level in DEPTH..INDEX_BITS {
+        position += index_bits[level] as Field * weight;
         weight *= 2;
     }
     (node, position)
@@ -194,12 +220,49 @@ fn main(
     // generator and modelling the domain shrinking each round, neither of
     // which this circuit does. Left public so a prover still cannot choose
     // them, and flagged as the remaining gap in the Fiat-Shamir replay.
-    index_bits: pub [[[bool; DEPTH]; ROUNDS]; KAPPA],
+    index_bits: pub [[[bool; INDEX_BITS]; ROUNDS]; KAPPA],
     carried_slots: pub [[Field; ROUNDS]; KAPPA],
+    // Public: the key bits the Legendre checks compare against. In the real
+    // scheme pk_bits are read out of the public key at challenge-derived
+    // indices and t_bits come from the signature.
+    pk_bits: pub [bool; B],
+    t_bits: pub [bool; B],
     // Private: the opening the prover supplies.
     coset_values: [[[Field; FIBER]; ROUNDS]; KAPPA],
     siblings: [[[Field; DEPTH]; ROUNDS]; KAPPA],
+    // Private: the Legendre symbols and their residuosity witnesses.
+    o_values: [Field; B],
+    o_inverses: [Field; B],
+    square_roots: [Field; B],
 ) {
+    // The 128 residuosity checks, one per public-key symbol: the Rust
+    // verifier requires o != 0 and L_0(o) == pk_bit XOR t_bit. Computing a
+    // Legendre symbol in-circuit would be an exponentiation by (p-1)/2,
+    // roughly 380 gates per symbol. The paper's own arithmetization
+    // (Algorithm 8) proves residuosity instead with a prover-supplied
+    // square root: w with w*w == o when the claimed bit is 0 (residue),
+    // or w*w == ALPHA * o when it is 1 (ALPHA is a fixed non-residue, so
+    // ALPHA * o is a residue exactly when o is not). One squaring, one
+    // inverse check and one XOR are ~3 multiplication constraints; measured
+    // with `bb gates`, the 128 checks cost 896 gates, 7 per symbol, against
+    // ~380 each for the exponentiation. This witness-square-root trick is
+    // also exactly why the Loquat
+    // paper excludes K = -I_l at keygen: it keeps o away from 0 for honest
+    // signers, so a square root always exists on one side or the other.
+    for i in 0..B {
+        let o = o_values[i];
+        // o != 0, constrained by exhibiting an inverse.
+        assert(o * o_inverses[i] == 1);
+
+        // Expected residuosity bit is pk XOR t, arithmetically a + b - 2ab.
+        let pk = pk_bits[i] as Field;
+        let t = t_bits[i] as Field;
+        let bit = pk + t - 2 * pk * t;
+
+        let w = square_roots[i];
+        assert(w * w == (1 - bit) * o + bit * (ALPHA * o));
+    }
+
     let challenges = derive_fold_challenges(caps);
 
     for query in 0..KAPPA {
@@ -248,10 +311,15 @@ struct Instance {
     final_coefficients: [Field; FINAL_COEFFS],
     domain_points: [[[Field; FIBER]; ROUNDS]; KAPPA],
     final_points: [Field; KAPPA],
-    index_bits: [[[bool; DEPTH]; ROUNDS]; KAPPA],
+    index_bits: [[[bool; INDEX_BITS]; ROUNDS]; KAPPA],
     carried_slots: [[Field; ROUNDS]; KAPPA],
+    pk_bits: [bool; B],
+    t_bits: [bool; B],
     coset_values: [[[Field; FIBER]; ROUNDS]; KAPPA],
     siblings: [[[Field; DEPTH]; ROUNDS]; KAPPA],
+    o_values: [Field; B],
+    o_inverses: [Field; B],
+    square_roots: [Field; B],
 }
 
 impl Instance {
@@ -263,8 +331,13 @@ impl Instance {
             self.final_points,
             self.index_bits,
             self.carried_slots,
+            self.pk_bits,
+            self.t_bits,
             self.coset_values,
             self.siblings,
+            self.o_values,
+            self.o_inverses,
+            self.square_roots,
         );
     }
 }
@@ -274,7 +347,7 @@ impl Instance {
 /// `link_offset` perturbs the value carried between layers: zero gives a
 /// valid instance, anything else breaks the layer-binding check.
 fn build_instance(link_offset: Field) -> Instance {
-    let zero_bits: [bool; DEPTH] = [false; DEPTH];
+    let zero_bits: [bool; INDEX_BITS] = [false; INDEX_BITS];
     let zero_siblings: [Field; DEPTH] = [0; DEPTH];
 
     // Domain points must be distinct within a round so the interpolation
@@ -325,13 +398,35 @@ fn build_instance(link_offset: Field) -> Instance {
     let mut domain_points: [[[Field; FIBER]; ROUNDS]; KAPPA] = [[[0; FIBER]; ROUNDS]; KAPPA];
     let mut coset_values: [[[Field; FIBER]; ROUNDS]; KAPPA] = [[[0; FIBER]; ROUNDS]; KAPPA];
     let siblings: [[[Field; DEPTH]; ROUNDS]; KAPPA] = [[[0; DEPTH]; ROUNDS]; KAPPA];
-    let index_bits: [[[bool; DEPTH]; ROUNDS]; KAPPA] = [[[false; DEPTH]; ROUNDS]; KAPPA];
+    let index_bits: [[[bool; INDEX_BITS]; ROUNDS]; KAPPA] = [[[false; INDEX_BITS]; ROUNDS]; KAPPA];
 
     for query in 0..KAPPA {
         for round in 0..ROUNDS {
             domain_points[query][round] = points[round];
             coset_values[query][round] = round_values[round];
         }
+    }
+
+    // Residuosity witnesses are chosen backwards: pick the square root
+    // first, then set `o` so the claimed bit is true by construction.
+    // For a residue, o = w^2. For a non-residue, o = w^2 / ALPHA, which is
+    // a non-residue because dividing a residue by the non-residue ALPHA
+    // flips residuosity, and w^2 == ALPHA * o then holds.
+    let mut pk_bits: [bool; B] = [false; B];
+    let mut t_bits: [bool; B] = [false; B];
+    let mut o_values: [Field; B] = [0; B];
+    let mut o_inverses: [Field; B] = [0; B];
+    let mut square_roots: [Field; B] = [0; B];
+
+    for i in 0..B {
+        pk_bits[i] = i % 2 == 0;
+        t_bits[i] = i % 3 == 0;
+        let bit = (pk_bits[i] != t_bits[i]) as Field;
+
+        let w = (i + 2) as Field;
+        square_roots[i] = w;
+        o_values[i] = (1 - bit) * (w * w) + bit * (w * w / ALPHA);
+        o_inverses[i] = 1 / o_values[i];
     }
 
     Instance {
@@ -341,8 +436,13 @@ fn build_instance(link_offset: Field) -> Instance {
         final_points: [2; KAPPA],
         index_bits,
         carried_slots: [[0; ROUNDS]; KAPPA],
+        pk_bits,
+        t_bits,
         coset_values,
         siblings,
+        o_values,
+        o_inverses,
+        square_roots,
     }
 }
 
@@ -383,5 +483,38 @@ fn rejects_a_tampered_final_polynomial() {
 fn rejects_a_cap_entry_no_query_opens() {
     let mut instance = build_instance(0);
     instance.caps[0][1] += 1;
+    instance.run();
+}
+
+/// The cap slot must come from the high index bits: pointing an opening at
+/// a cap entry it does not hash to must fail. Before the geometry fix the
+/// cap slot was built from the same bits that steer the path walk, so the
+/// high bits did not exist and slots past the walked position were
+/// unreachable.
+#[test(should_fail)]
+fn rejects_a_wrong_cap_slot() {
+    let mut instance = build_instance(0);
+    instance.index_bits[0][0][DEPTH] = true;
+    instance.run();
+}
+
+/// A residuosity claim that contradicts the witness square root must fail:
+/// flipping one public key bit flips the expected bit while `w` still
+/// squares to the other side.
+#[test(should_fail)]
+fn rejects_a_wrong_residuosity_bit() {
+    let mut instance = build_instance(0);
+    instance.pk_bits[0] = !instance.pk_bits[0];
+    instance.run();
+}
+
+/// o = 0 must be rejected. The square check alone would accept it with
+/// w = 0 on either side, so this is the inverse constraint doing the work.
+#[test(should_fail)]
+fn rejects_a_zero_legendre_symbol() {
+    let mut instance = build_instance(0);
+    instance.o_values[0] = 0;
+    instance.o_inverses[0] = 0;
+    instance.square_roots[0] = 0;
     instance.run();
 }

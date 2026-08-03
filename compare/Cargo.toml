@@ -9,3 +9,4 @@ wots = { path = "../wots" }
 xmss = { path = "../xmss" }
 leansig = { path = "../leansig" }
 loquat = { path = "../loquat" }
+capss = { path = "../capss" }

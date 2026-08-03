@@ -6,8 +6,8 @@ zero-knowledge proof**.
 
 Everything here resists quantum attack for the same underlying reason:
 none of it relies on factoring or discrete logs, which is what Shor's
-algorithm breaks. Instead the schemes are built from hash functions or
-from the Legendre PRF.
+algorithm breaks. Instead the schemes are built from hash functions, the
+Legendre PRF, or a single permutation.
 
 ## The schemes
 
@@ -20,14 +20,14 @@ Each builds on the last, so reading them in order works well.
 | [`xmss`](xmss/) | A Merkle tree over many WOTS keys, turning one-time into many-time. |
 | [`leansig`](leansig/) | What Ethereum is actually building: Winternitz with a target sum, over Poseidon2. |
 | [`loquat`](loquat/) | A different foundation entirely — the Legendre PRF, proved with a univariate sumcheck and FRI. |
-| [`capss`](capss/) | In progress — an AO permutation (Anemoi over Goldilocks) proved with SmallWood. |
+| [`capss`](capss/) | One permutation doing all three jobs (Anemoi over Goldilocks), proved with SmallWood. |
 | [`poseidon2`](poseidon2/) | The circuit-friendly hash leanSig and the circuits depend on. |
 | [`circuits`](circuits/) | Noir verification circuits and their measured gate counts. |
 
 ## Running it
 
 ```
-cargo test --workspace          # 104 tests
+cargo test --workspace          # 170 tests
 cargo run --release -p compare  # the table below
 cargo run --release -p loquat --example loquat128
 ```
@@ -46,7 +46,8 @@ the public key.
 | XMSS (h=4) | 2.6 ms | 72 µs | 83 µs | 2.2 KB | 32 B | 16 |
 | XMSS (h=10) | 125 ms | 55 µs | 63 µs | 2.4 KB | 32 B | 1024 |
 | leanSig | 768 µs | 694 µs | 308 µs | 1.8 KB | 32 B | **1** |
-| Loquat-128 | 27 ms | 19 ms | 2.9 ms | 68.8 KB | 4 KB | **unlimited** |
+| Loquat-128 | 26 ms | 18 ms | 2.9 ms | 62.3 KB | 4 KB | **unlimited** |
+| CAPSS-128 | 21 µs | **1.63 s** | 8.7 ms | 18.7 KB | **64 B** | **unlimited** |
 
 ## In-circuit cost
 
@@ -59,7 +60,8 @@ with `bb gates`. This is a *different question* with different answers.
 | `leansig_verify` | 72,304 | 56 chains x 15 worst-case steps |
 | `wots_verify` | 84,582 | 66 chains x 15 |
 | `xmss_verify` | 86,596 | WOTS + a height-10 Merkle path |
-| `loquat_verify` | 98,633 | FRI queries + Fiat-Shamir (see caveats below) |
+| `capss_verify` | 97,199 | SmallWood openings + full Fiat-Shamir replay (see caveats below) |
+| `loquat_verify` | 100,937 | FRI queries + Fiat-Shamir + residuosity (see caveats below) |
 
 `loquat_verify` covers the FRI query checks — Merkle openings, fold
 consistency, final polynomial check — plus **in-circuit Fiat-Shamir**: the
@@ -68,10 +70,31 @@ than trusted as inputs. That replay cost only **3,135 gates (+3.3%)**,
 because it adds ~20 hash calls against the 896 already spent on Merkle
 paths.
 
-It still leaves out the 128 Legendre symbol checks, so it is not a
-complete verifier, and it is **not comparable to the paper's 148,825
+It now also carries the **128 Legendre residuosity checks**, done the way
+the paper itself arithmetizes them — a prover-supplied square root rather
+than an exponentiation — for **896 gates total, 7 per check instead of
+~380**. It is still not a complete verifier: the residuosity inputs are
+not absorbed into the transcript that yields the FRI challenges, the query
+indices are pinned rather than derived, and the sumcheck opening
+consistency is absent. It remains **not comparable to the paper's 148,825
 R1CS**, which assumes the Griffin hash and the real field. Details in
 [`circuits/README.md`](circuits/README.md).
+
+`capss_verify` puts CAPSS's headline claim — cheap in-circuit
+verification, ~24K R1CS in the paper — under the same measurement, and
+the claim does not survive it: **97,199 gates, within 2% of Loquat**. The
+circuit mirrors `capss::piop::verify` at the Rust crate's parameters,
+including a *complete* Fiat-Shamir replay (all 352 challenge coefficients
+and all 20 opening indices are squeezed in-circuit — nothing pinned), 20
+Merkle openings, the real corrected Flystel constraint combination, and
+the load-bearing sum-to-zero identity. The single largest cost is not
+hashing but deriving the opening indices: 20 canonical bit decompositions
+at ~36K gates, the price `loquat_verify` avoids by pinning its query
+indices. The paper's ~24K assumes Griffin/Anemoi natively over BN254 with
+rho = 1; this circuit inherits the Goldilocks-shaped parameter set
+(rho = 2, 352 challenges) and hashes with Poseidon2, so the two numbers
+are **not comparable** — but the row above is measured under the same
+conventions as every other row, and that comparison is fair.
 
 ## What the numbers actually say
 
@@ -83,7 +106,7 @@ post-quantum work is built on Poseidon2 rather than SHA-256.
 
 **2. Native speed predicts circuit cost badly — sometimes backwards.**
 Lamport has the largest signature (8 KB) and the largest public key
-(16 KB), yet it is the **cheapest circuit of the four**, at under half
+(16 KB), yet it is the **cheapest circuit here**, at under half
 WOTS's cost. The reason is branching: a circuit's shape is fixed before it
 sees any input, so a hash chain that *might* need 15 steps costs 15 steps
 every time. Lamport has no chains, so it wastes nothing. WOTS's compactness
@@ -103,7 +126,7 @@ When verification happens inside a proof, there is little reason to accept
 a one-time scheme.
 
 **4b. Even a FRI verifier is mostly a Merkle verifier.** Of
-`loquat_verify`'s 98,633 gates, ~65,000 (about 66%) are the 896 Poseidon2
+`loquat_verify`'s 100,937 gates, ~65,000 (about 64%) are the 896 Poseidon2
 calls verifying Merkle paths and leaves. The polynomial arithmetic that
 makes FRI *interesting* — interpolating each fiber, evaluating at the
 round challenge, divisions included — is the minority of the cost, and
@@ -118,13 +141,28 @@ and the right one for a proof.
 **6. Statefulness is the real deployment cost.** Lamport, WOTS, and leanSig
 are strictly one-time — signing twice with one key makes forgery possible.
 XMSS is many-time but must *remember* which leaf it has used; restoring
-from a backup without that counter breaks it. Loquat alone is stateless
-and unlimited, which is what its 68.8 KB signature is buying.
+from a backup without that counter breaks it. Loquat and CAPSS are
+stateless and unlimited, which is what their much larger signatures buy.
+
+**7. The two proof-based schemes trade in opposite directions.** Loquat
+signs in 18 ms with a 62.3 KB signature; CAPSS signs in **1.63 seconds**
+with an 18.7 KB one. CAPSS also has the smallest public key here by a wide
+margin — **64 bytes**, against Loquat's 4 KB and Lamport's 16 KB — because
+its key is literally one permutation input and its truncated output.
+
+That slow signing is not an accident of this implementation. It is
+inherent: signing commits `2^14` polynomial evaluations and hashes that
+many Merkle leaves. The paper reports 0.7–9.9 s for its own BN254 build,
+so 1.63 s over Goldilocks sits inside the expected range. **The cost is
+paid once at signing so that verification stays cheap**, which is the
+right trade when a signature is verified far more often than it is made —
+and even more so when verification happens inside a proof.
 
 ## Status
 
 **Implemented, tested, and measured:** Lamport, WOTS, XMSS, leanSig,
-Loquat, and five Noir circuits. 104 Rust tests plus 5 Noir tests pass.
+Loquat, CAPSS, and six Noir circuits. **170 Rust tests plus 14 Noir tests
+pass, and `cargo clippy --workspace` is clean.**
 
 **Loquat** is a full implementation of ePrint 2024/868 at the paper's real
 Loquat-128 parameters, including the univariate sumcheck and FRI. It is
@@ -135,19 +173,44 @@ vectors for Loquat**, so passing its own tests is genuinely weaker than
 being correct, and it has not been audited. See
 [`loquat/README.md`](loquat/README.md) for the full list of deviations.
 
-**CAPSS is partially built.** Reading the spec (ePrint 2025/061) showed it
+**CAPSS signs and verifies.** Reading the spec (ePrint 2025/061) showed it
 is not the MPC-in-the-head design it is often described as — it is built on
-SmallWood, a four-layer polynomial commitment stack (DECS → LVCS → PCS →
-PIOP) over an arithmetization-oriented permutation. The `capss/` crate
-currently has the Goldilocks field and the Anemoi permutation, with the
-arithmetization and commitment layers in progress. **It cannot sign or
-verify yet.** See `HANDOFF.md` for exactly what is done.
+SmallWood, a hash-based polynomial commitment stack in the Ligero lineage.
+Anemoi over Goldilocks supplies the one-way function, the sponge XOF, and
+Jive Merkle compression, so nothing rests on an assumption the permutation
+does not already make.
 
-**`loquat_verify` is partial by design.** It covers the FRI query checks
-and in-circuit Fiat-Shamir, and carries its own satisfiability tests, but
-it does not check the Legendre symbols, and it uses Poseidon2/BN254 rather
-than Griffin over `F_p2`. Its 98,633 gates and the paper's 148,825 R1CS are
-**not** the same measurement. There is no CAPSS circuit at all.
+Two honest caveats, both documented in the code rather than buried:
+
+- **The load-bearing check is the PIOP's sum-to-zero identity alone.** In
+  this composition the degree-enforcing commitment reconstructs exactly as
+  many low coefficients as it opens points, so its reconstruction is
+  self-consistent by construction and contributes no independent check.
+  That is a real simplification against the paper.
+- **The soundness estimate is a heuristic, not a proof.** It is written out
+  in `capss/src/piop.rs`. Zero knowledge is argued informally too.
+
+What *is* demonstrated: a forged signature built from a wrong witness is
+rejected — including one spliced from two genuine executions, which passes
+every per-round constraint and is caught only by the wiring. See
+[`capss/README.md`](capss/README.md).
+
+**`loquat_verify` is partial by design.** It covers the FRI query checks,
+in-circuit Fiat-Shamir, and the 128 Legendre residuosity checks, and
+carries its own satisfiability tests, but it does not absorb the
+residuosity inputs into the FRI transcript, derive the query indices, or
+check the sumcheck opening consistency, and it uses Poseidon2/BN254 rather
+than Griffin over `F_p2`. Its 100,937 gates and the paper's 148,825 R1CS
+are **not** the same measurement.
+
+**`capss_verify` covers the whole PIOP verifier shape** — full Fiat-Shamir
+replay with in-circuit index derivation, Merkle openings, the constraint
+combination, and the sum-to-zero identity, with six satisfiability tests
+driven by an honest in-test prover. What it omits: the DECS batched
+polynomials (not load-bearing in this composition, see
+`capss/src/piop.rs`), the salt, and index binding inside the leaf hash.
+Its 97,199 gates and the paper's ~24K R1CS are **not** the same
+measurement either — different hash, field, and parameter set.
 
 ## A note on scope
 

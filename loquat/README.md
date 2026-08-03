@@ -176,7 +176,7 @@ Run `cargo run --release -p loquat --example loquat128`:
 | | This implementation | Paper |
 |---|---|---|
 | Public key | 4096 B | 4 KB |
-| Signature | 68.8 KB | 57 KB |
+| Signature | 62.3 KB | 57 KB |
 | Keygen | 36 ms | 0.1 s |
 | Sign | 19 ms | 5.04 s |
 | Verify | 2.9 ms | 0.21 s |
@@ -185,40 +185,38 @@ The timings are much faster than the paper's because the paper's prototype
 is written in Python/SageMath and this is optimised Rust — that is a
 language gap, not a disagreement about the scheme.
 
-The **signature is about 21% larger** than the paper's, and that gap is
-real. Two savings *are* implemented, both the same idea — never send what
-the verifier can work out for itself:
+The **signature is about 9% larger** than the paper's. Two savings are
+implemented, both the same idea — never send what the verifier can work
+out for itself:
 
 - After the first FRI round, one value in each queried fiber is already
   determined by the previous round's fold, so it is left out and the
-  verifier rebuilds it before hashing the leaf. Worth 3072 B here.
-- The `h` openings are determined by everything else at the same point,
-  because the batched codeword FRI tested depends on `h` affinely. The
-  verifier solves for them and checks the result against `h`'s Merkle
-  commitment. Worth 4096 B here.
+  verifier rebuilds it before hashing the leaf. This one is the paper's
+  own. Worth ~3 KB.
+- **FRI's first layer is virtual.** The batched codeword is a public
+  linear combination of oracles (`c`, `s`, `h`) that were each
+  Merkle-committed *before* any challenge was drawn, so committing the
+  combination again adds bytes but no binding. The verifier computes the
+  layer-0 values from the openings it already checked, folds them, and
+  tests the result against layer 1's commitment. No layer-0 tree, no
+  layer-0 paths, no layer-0 values. Worth ~6.7 KB.
 
-Neither costs soundness: the omitted values are recomputed and still have
-to match what was committed to. But they differ in provenance, and that is
-worth being clear about:
+The second saving **deviates from the paper**, which does ship
+`rootf^(0)` — but it is exactly how production FRI deployments (Fractal,
+Plonky2, Winterfell) treat their composition polynomial, and the binding
+argument is the standard one: everything layer 0 depends on was committed
+before the first fold challenge existed. An earlier revision instead
+solved the `h` openings from the layer-0 values (saving the same bytes
+from the other side); that was our own invention, and it was replaced by
+this standard construction when the two turned out to be mutually
+exclusive — one of `h` or the batched value must be sent, and sending `h`
+is what the paper does.
 
-- The **FRI saving is the paper's** — it describes revealing only
-  `kappa * (2^eta - 1)` values per later round.
-- The **`h` saving is our own**, not something the paper describes. The
-  argument is that `h` enters the batched codeword affinely, so for a
-  fixed batched value there is exactly one `h` that fits; solving for it
-  and checking that against the Merkle commitment accepts precisely the
-  same proofs as receiving it and checking both. It has one new
-  completeness edge: if the slope is zero the value is undetermined and
-  verification rejects. That needs degenerate Fiat-Shamir challenges, so
-  honest signatures effectively never hit it — but it was reasoned out
-  rather than tested, and reverting this half is self-contained if you
-  would rather the verifier read as a straight check.
-
-What remains of the gap is not accounted for. The openings dominate what
-is left (39 KB of 70 KB, of which 18 KB is Merkle paths). Merging the
-three trees into one would save ~13 KB, but it is **not possible**:
-`root_c`, `root_s`, and `root_h` are absorbed at different points in the
-transcript, because later challenges depend on earlier roots.
+What remains of the ~5 KB gap is not accounted for. The `c`/`s`/`h`
+openings dominate what is left. Merging their three trees into one would
+save most of it, but it is **not possible**: the roots are absorbed at
+different points in the transcript, because later challenges depend on
+earlier roots.
 
 ## Honest status
 
@@ -227,7 +225,7 @@ signing phases, and all three verification steps, including the univariate
 sumcheck, FRI with tree-capped Merkle commitments, and a domain-separated
 Fiat-Shamir transcript.
 
-**What is validated (63 tests):** field arithmetic against schoolbook and
+**What is validated (64 tests):** field arithmetic against schoolbook and
 known identities; the FFT against naive Horner evaluation; Legendre
 multiplicativity; the arithmetisation identity directly; that the ZK mask
 does not disturb the sum; Merkle openings and every tampering variant; FRI

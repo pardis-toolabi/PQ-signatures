@@ -20,22 +20,33 @@ use crate::transcript::{hash_fp2_slice, Hash, Transcript};
 
 #[derive(Clone, Debug)]
 pub struct LayerOpening {
-    /// The queried fiber, minus anything the verifier can rebuild itself.
-    /// Round 0 carries all `2^eta` values; from round 1 on, one slot is
-    /// already fixed by the previous round's fold, so it is left out and
-    /// the verifier puts it back before checking the leaf.
+    /// The queried fiber, minus the one slot the previous round's fold
+    /// already fixes — the verifier reinserts that before hashing.
     pub coset_values: Vec<Fp2>,
     pub path: MerklePath,
 }
 
 #[derive(Clone, Debug)]
 pub struct Query {
-    /// One opening per committed layer.
+    /// One opening per *committed* layer — that is rounds 1 onward.
+    /// Layer 0 is virtual: see the note on `Proof`.
     pub layers: Vec<LayerOpening>,
 }
 
+/// A FRI proof over a **virtual first layer**.
+///
+/// The layer-0 codeword is never committed here. In Loquat it is a public
+/// linear combination of oracles that were each Merkle-committed *before*
+/// any challenge was drawn (`c`, `s`, `h`), so a separate commitment to
+/// the combination adds bytes but no binding. The verifier computes the
+/// layer-0 values at the queried positions from those openings, folds
+/// them, and checks the result against layer 1's commitment — which is how
+/// production FRI deployments (Fractal, Plonky2, Winterfell) handle their
+/// composition polynomial. The Loquat paper itself ships `rootf^(0)`; this
+/// is a deliberate, documented deviation that saves ~6.7 KB per signature.
 #[derive(Clone, Debug)]
 pub struct Proof {
+    /// Roots of layers 1 .. rounds-1.
     pub roots: Vec<Hash>,
     pub caps: Vec<Vec<Hash>>,
     /// Coefficients of the final, fully folded polynomial.
@@ -117,14 +128,21 @@ pub fn prove(
     let mut caps: Vec<Vec<Hash>> = Vec::new();
 
     for round in 0..params.rounds {
-        let current = layers.last().unwrap().clone();
-        let tree = MerkleTree::build(leaves_for(&current, fiber), params.cap_log);
-        let root = tree.root();
-        transcript.absorb_hash(b"fri-root", &root);
-        roots.push(root);
-        caps.push(tree.cap().to_vec());
-        trees.push(tree);
+        // Layer 0 is virtual — it is already pinned by the commitments the
+        // caller absorbed before reaching here, so the first challenge can
+        // be drawn with nothing new to absorb. Layers produced by folding
+        // are fresh and must be committed before their challenge.
+        if round > 0 {
+            let current = layers.last().unwrap();
+            let tree = MerkleTree::build(leaves_for(current, fiber), params.cap_log);
+            let root = tree.root();
+            transcript.absorb_hash(b"fri-root", &root);
+            roots.push(root);
+            caps.push(tree.cap().to_vec());
+            trees.push(tree);
+        }
 
+        let current = layers.last().unwrap().clone();
         let challenge = transcript.challenge_fp2(b"fri-fold");
         let log_size = params.u_log - params.eta * round as u32;
         layers.push(fold(params, &current, challenge, log_size));
@@ -145,21 +163,25 @@ pub fn prove(
     let queries = indices
         .iter()
         .map(|start| {
+            // Round 0 contributes nothing to the proof: its values are
+            // computed by the verifier from the constituent oracles, and
+            // there is no tree to open. Openings start at round 1.
             let mut position = *start;
-            let mut openings = Vec::with_capacity(params.rounds);
-            for round in 0..params.rounds {
+            let mut openings = Vec::with_capacity(params.rounds.saturating_sub(1));
+            for round in 1..params.rounds {
                 let codeword = &layers[round];
                 let count = codeword.len() / fiber;
                 let k = position % count;
                 let mut values = fiber_values(codeword, fiber, k);
-                if round > 0 {
-                    // `position` is the previous layer's fiber index, so it
-                    // is also the index *within this layer* of that fiber's
-                    // folded value. Dropping it costs nothing: the verifier
-                    // recomputes the fold anyway.
-                    values.remove(position / count);
-                }
-                openings.push(LayerOpening { coset_values: values, path: trees[round].open(k) });
+                // `position` is the previous layer's fiber index, so it is
+                // also the index *within this layer* of that fiber's folded
+                // value. Dropping it costs nothing: the verifier recomputes
+                // the fold anyway.
+                values.remove(position / count);
+                openings.push(LayerOpening {
+                    coset_values: values,
+                    path: trees[round - 1].open(k),
+                });
                 position = k;
             }
             Query { layers: openings }
@@ -169,28 +191,44 @@ pub fn prove(
     (Proof { roots, caps, final_coefficients, queries }, indices)
 }
 
-/// Replays the folding and checks every layer agrees.
+/// The challenges and query positions a proof commits to, recovered by
+/// replaying the Fiat-Shamir transcript.
 ///
-/// Returns the layer-0 fiber openings so the caller can cross-check them
-/// against whatever it expected the batched codeword to be — in Loquat
-/// that link is what ties the FRI to the sumcheck codewords.
-pub fn verify(
+/// Verification is split in two because of who knows what: the layer-0
+/// codeword is never sent — in Loquat it is the batched combination of the
+/// sumcheck oracles, which only the caller can evaluate — but the caller
+/// cannot evaluate it at the right positions until the transcript has been
+/// replayed to reveal them. So `replay_transcript` first, compute the
+/// layer-0 fibers at `plan.indices`, then `check_queries`.
+pub struct QueryPlan {
+    pub challenges: Vec<Fp2>,
+    pub indices: Vec<usize>,
+}
+
+/// Phase one: check the commitments hash together, replay the transcript,
+/// and recover the fold challenges and query positions.
+pub fn replay_transcript(
     params: &Params,
     proof: &Proof,
     transcript: &mut Transcript,
-) -> Option<Vec<(usize, Vec<Fp2>)>> {
+) -> Option<QueryPlan> {
     let fiber = 1usize << params.eta;
-    if proof.roots.len() != params.rounds || proof.caps.len() != params.rounds {
+    if proof.roots.len() + 1 != params.rounds || proof.caps.len() + 1 != params.rounds {
         return None;
     }
 
-    // Replay the transcript to recover the same challenges the prover used.
     let mut challenges = Vec::with_capacity(params.rounds);
-    for round in 0..params.rounds {
-        if crate::transcript::hash_many(b"cap", &proof.caps[round]) != proof.roots[round] {
+    // The first fold challenge absorbs nothing new: layer 0 is a public
+    // combination of oracles whose roots the caller already absorbed, so
+    // everything it depends on is in the transcript by the time we get
+    // here. Committing it again would add bytes, not binding.
+    challenges.push(transcript.challenge_fp2(b"fri-fold"));
+    for round in 1..params.rounds {
+        let committed = round - 1;
+        if crate::transcript::hash_many(b"cap", &proof.caps[committed]) != proof.roots[committed] {
             return None;
         }
-        transcript.absorb_hash(b"fri-root", &proof.roots[round]);
+        transcript.absorb_hash(b"fri-root", &proof.roots[committed]);
         challenges.push(transcript.challenge_fp2(b"fri-fold"));
     }
     transcript.absorb_fp2_slice(b"fri-final", &proof.final_coefficients);
@@ -200,75 +238,89 @@ pub fn verify(
         return None;
     }
 
+    Some(QueryPlan { challenges, indices })
+}
+
+/// Phase two: check every query against the committed layers.
+///
+/// `layer0_values[q]` must be the full fiber of the layer-0 codeword at
+/// position `plan.indices[q]`, computed by the caller. Layer 0 has no
+/// Merkle check of its own — its binding is that the caller derived these
+/// values from openings of oracles committed before any challenge was
+/// drawn. What holds the chain together is the fold: these values must
+/// fold into what layer 1 committed to, and so on down to the final
+/// polynomial sent in the clear.
+pub fn check_queries(
+    params: &Params,
+    proof: &Proof,
+    plan: &QueryPlan,
+    layer0_values: &[Vec<Fp2>],
+) -> bool {
+    let fiber = 1usize << params.eta;
+    if layer0_values.len() != params.kappa {
+        return false;
+    }
+
     let final_log = params.u_log - params.eta * params.rounds as u32;
     let final_generator = crate::field::subgroup_generator(final_log);
-    let mut layer0 = Vec::with_capacity(params.kappa);
 
-    for (query, start) in proof.queries.iter().zip(indices.iter()) {
-        if query.layers.len() != params.rounds {
-            return None;
+    for ((query, start), supplied) in
+        proof.queries.iter().zip(plan.indices.iter()).zip(layer0_values.iter())
+    {
+        if query.layers.len() + 1 != params.rounds || supplied.len() != fiber {
+            return false;
         }
 
-        let mut position = *start;
-        let mut carried: Option<Fp2> = None;
+        // Round 0: fold the virtual fiber the caller computed.
+        let mut position = *start % (params.u_size / fiber);
+        let generator = crate::field::subgroup_generator(params.u_log);
+        let shift = generator.pow(position as u128);
+        let coefficients = interpolate_over_coset(supplied, shift, params.eta);
+        let mut carried = evaluate_at(&coefficients, plan.challenges[0]);
 
-        for (round, (opening, challenge)) in query.layers.iter().zip(challenges.iter()).enumerate() {
+        for (round, (opening, challenge)) in
+            query.layers.iter().zip(plan.challenges[1..].iter()).enumerate()
+        {
+            let round = round + 1;
             let size = params.domain_size_at(round);
             let count = size / fiber;
             let k = position % count;
 
-            // From round 1 on, one value in this fiber is already pinned
-            // down by the previous fold, so the prover omits it and we
-            // rebuild it. Putting it back *before* the leaf hash is what
-            // keeps the chain of layers binding: a fold that disagrees with
-            // what the prover committed to produces a different leaf, and
-            // the Merkle check fails.
-            let coset_values = match carried {
-                Some(expected) => {
-                    let slot = position / count;
-                    if opening.coset_values.len() + 1 != fiber || slot >= fiber {
-                        return None;
-                    }
-                    let mut values = opening.coset_values.clone();
-                    values.insert(slot, expected);
-                    values
-                }
-                None => {
-                    if opening.coset_values.len() != fiber {
-                        return None;
-                    }
-                    opening.coset_values.clone()
-                }
-            };
+            // One slot of this fiber is the previous round's fold, so it
+            // never travelled; rebuild it *before* the leaf hash. Values
+            // that disagree with what was committed produce a different
+            // leaf, and the Merkle check fails — that is what makes the
+            // chain of layers binding.
+            let slot = position / count;
+            if opening.coset_values.len() + 1 != fiber || slot >= fiber {
+                return false;
+            }
+            let mut coset_values = opening.coset_values.clone();
+            coset_values.insert(slot, carried);
 
             // The opening must be a genuine leaf of this layer's tree.
             let leaf = hash_fp2_slice(b"fri-leaf", &coset_values);
-            if !verify_with_cap(&proof.caps[round], leaf, k, &opening.path) {
-                return None;
-            }
-
-            if round == 0 {
-                layer0.push((k, coset_values.clone()));
+            if !verify_with_cap(&proof.caps[round - 1], leaf, k, &opening.path) {
+                return false;
             }
 
             let log_size = params.u_log - params.eta * round as u32;
             let generator = crate::field::subgroup_generator(log_size);
             let shift = generator.pow(k as u128);
             let coefficients = interpolate_over_coset(&coset_values, shift, params.eta);
-            carried = Some(evaluate_at(&coefficients, *challenge));
+            carried = evaluate_at(&coefficients, *challenge);
             position = k;
         }
 
         // Finally, the folded value must match the polynomial that was
         // sent in the clear.
-        let expected = carried?;
         let point = final_generator.pow((position % params.domain_size_at(params.rounds)) as u128);
-        if evaluate_at(&proof.final_coefficients, point) != expected {
-            return None;
+        if evaluate_at(&proof.final_coefficients, point) != carried {
+            return false;
         }
     }
 
-    Some(layer0)
+    true
 }
 
 #[cfg(test)]
@@ -284,16 +336,31 @@ mod tests {
         evaluate_over_coset(&coefficients, Fp2::ONE, params.u_log)
     }
 
+    /// Runs both verification phases the way a real caller would: replay
+    /// the transcript, evaluate the layer-0 codeword at the revealed
+    /// positions, then check the queries.
+    fn run_verify(params: &Params, proof: &Proof, domain: &[u8], codeword: &[Fp2]) -> bool {
+        let mut transcript = Transcript::new(domain);
+        match replay_transcript(params, proof, &mut transcript) {
+            Some(plan) => {
+                let fiber = 1usize << params.eta;
+                let layer0: Vec<Vec<Fp2>> =
+                    plan.indices.iter().map(|k| fiber_values(codeword, fiber, *k)).collect();
+                check_queries(params, proof, &plan, &layer0)
+            }
+            None => false,
+        }
+    }
+
     #[test]
     fn honest_low_degree_codeword_passes() {
         let params = Params::testing();
         let codeword = low_degree_codeword(&params, params.rate_numerator);
 
         let mut prover_transcript = Transcript::new(b"fri-test");
-        let (proof, _) = prove(&params, codeword, &mut prover_transcript);
+        let (proof, _) = prove(&params, codeword.clone(), &mut prover_transcript);
 
-        let mut verifier_transcript = Transcript::new(b"fri-test");
-        assert!(verify(&params, &proof, &mut verifier_transcript).is_some());
+        assert!(run_verify(&params, &proof, b"fri-test", &codeword));
     }
 
     #[test]
@@ -304,10 +371,9 @@ mod tests {
         let codeword = low_degree_codeword(&params, params.u_size);
 
         let mut prover_transcript = Transcript::new(b"fri-test");
-        let (proof, _) = prove(&params, codeword, &mut prover_transcript);
+        let (proof, _) = prove(&params, codeword.clone(), &mut prover_transcript);
 
-        let mut verifier_transcript = Transcript::new(b"fri-test");
-        assert!(verify(&params, &proof, &mut verifier_transcript).is_none());
+        assert!(!run_verify(&params, &proof, b"fri-test", &codeword));
     }
 
     #[test]
@@ -318,10 +384,9 @@ mod tests {
             .collect();
 
         let mut prover_transcript = Transcript::new(b"fri-test");
-        let (proof, _) = prove(&params, codeword, &mut prover_transcript);
+        let (proof, _) = prove(&params, codeword.clone(), &mut prover_transcript);
 
-        let mut verifier_transcript = Transcript::new(b"fri-test");
-        assert!(verify(&params, &proof, &mut verifier_transcript).is_none());
+        assert!(!run_verify(&params, &proof, b"fri-test", &codeword));
     }
 
     #[test]
@@ -330,25 +395,33 @@ mod tests {
         let codeword = low_degree_codeword(&params, params.rate_numerator);
 
         let mut prover_transcript = Transcript::new(b"fri-test");
-        let (mut proof, _) = prove(&params, codeword, &mut prover_transcript);
+        let (mut proof, _) = prove(&params, codeword.clone(), &mut prover_transcript);
         proof.final_coefficients[0] = proof.final_coefficients[0] + Fp2::ONE;
 
-        let mut verifier_transcript = Transcript::new(b"fri-test");
-        assert!(verify(&params, &proof, &mut verifier_transcript).is_none());
+        assert!(!run_verify(&params, &proof, b"fri-test", &codeword));
     }
 
     #[test]
-    fn tampered_query_value_is_rejected() {
+    fn wrong_supplied_layer0_values_are_rejected() {
+        // Layer 0 is virtual: no tree, no leaf check. What catches a wrong
+        // supplied value is the fold — it lands on something layer 1 never
+        // committed to, so the reconstructed round-1 leaf fails its Merkle
+        // check. This test is what shows the chain still binds the virtual
+        // layer.
         let params = Params::testing();
+        let fiber = 1usize << params.eta;
         let codeword = low_degree_codeword(&params, params.rate_numerator);
 
         let mut prover_transcript = Transcript::new(b"fri-test");
-        let (mut proof, _) = prove(&params, codeword, &mut prover_transcript);
-        proof.queries[0].layers[0].coset_values[0] =
-            proof.queries[0].layers[0].coset_values[0] + Fp2::ONE;
+        let (proof, _) = prove(&params, codeword.clone(), &mut prover_transcript);
 
-        let mut verifier_transcript = Transcript::new(b"fri-test");
-        assert!(verify(&params, &proof, &mut verifier_transcript).is_none());
+        let mut transcript = Transcript::new(b"fri-test");
+        let plan = replay_transcript(&params, &proof, &mut transcript).unwrap();
+        let mut layer0: Vec<Vec<Fp2>> =
+            plan.indices.iter().map(|k| fiber_values(&codeword, fiber, *k)).collect();
+        layer0[0][0] = layer0[0][0] + Fp2::ONE;
+
+        assert!(!check_queries(&params, &proof, &plan, &layer0));
     }
 
     #[test]
@@ -361,9 +434,9 @@ mod tests {
         let (proof, _) = prove(&params, codeword, &mut prover_transcript);
 
         let layers = &proof.queries[0].layers;
-        assert_eq!(layers[0].coset_values.len(), fiber);
-        for later in &layers[1..] {
-            assert_eq!(later.coset_values.len(), fiber - 1);
+        assert_eq!(layers.len(), params.rounds - 1, "layer 0 is virtual, so no opening for it");
+        for opening in layers {
+            assert_eq!(opening.coset_values.len(), fiber - 1);
         }
     }
 
@@ -376,11 +449,10 @@ mod tests {
         let codeword = low_degree_codeword(&params, params.rate_numerator);
 
         let mut prover_transcript = Transcript::new(b"fri-test");
-        let (mut proof, _) = prove(&params, codeword, &mut prover_transcript);
-        proof.queries[0].layers[1].coset_values.push(Fp2::ONE);
+        let (mut proof, _) = prove(&params, codeword.clone(), &mut prover_transcript);
+        proof.queries[0].layers[0].coset_values.push(Fp2::ONE);
 
-        let mut verifier_transcript = Transcript::new(b"fri-test");
-        assert!(verify(&params, &proof, &mut verifier_transcript).is_none());
+        assert!(!run_verify(&params, &proof, b"fri-test", &codeword));
     }
 
     #[test]
@@ -394,11 +466,10 @@ mod tests {
         let codeword = low_degree_codeword(&params, params.rate_numerator);
 
         let mut prover_transcript = Transcript::new(b"fri-test");
-        let (mut proof, _) = prove(&params, codeword, &mut prover_transcript);
-        proof.queries[0].layers[1].coset_values.rotate_left(1);
+        let (mut proof, _) = prove(&params, codeword.clone(), &mut prover_transcript);
+        proof.queries[0].layers[0].coset_values.rotate_left(1);
 
-        let mut verifier_transcript = Transcript::new(b"fri-test");
-        assert!(verify(&params, &proof, &mut verifier_transcript).is_none());
+        assert!(!run_verify(&params, &proof, b"fri-test", &codeword));
     }
 
     #[test]
@@ -410,12 +481,11 @@ mod tests {
         let codeword = low_degree_codeword(&params, params.rate_numerator);
 
         let mut prover_transcript = Transcript::new(b"fri-test");
-        let (mut proof, _) = prove(&params, codeword, &mut prover_transcript);
-        proof.queries[0].layers[1].coset_values[0] =
-            proof.queries[0].layers[1].coset_values[0] + Fp2::ONE;
+        let (mut proof, _) = prove(&params, codeword.clone(), &mut prover_transcript);
+        proof.queries[0].layers[0].coset_values[0] =
+            proof.queries[0].layers[0].coset_values[0] + Fp2::ONE;
 
-        let mut verifier_transcript = Transcript::new(b"fri-test");
-        assert!(verify(&params, &proof, &mut verifier_transcript).is_none());
+        assert!(!run_verify(&params, &proof, b"fri-test", &codeword));
     }
 
     #[test]
@@ -425,9 +495,8 @@ mod tests {
         let codeword = low_degree_codeword(&params, params.rate_numerator);
 
         let mut prover_transcript = Transcript::new(b"fri-test");
-        let (proof, _) = prove(&params, codeword, &mut prover_transcript);
+        let (proof, _) = prove(&params, codeword.clone(), &mut prover_transcript);
 
-        let mut verifier_transcript = Transcript::new(b"different-domain");
-        assert!(verify(&params, &proof, &mut verifier_transcript).is_none());
+        assert!(!run_verify(&params, &proof, b"different-domain", &codeword));
     }
 }

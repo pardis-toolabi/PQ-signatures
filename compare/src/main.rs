@@ -195,6 +195,41 @@ fn bench_loquat(iterations: u32) {
     );
 }
 
+fn bench_capss(iterations: u32) {
+    let parameters = capss::piop::Parameters::level_128();
+
+    let (mut keygen_total, mut sign_total, mut verify_total) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+    let (mut sig_size, mut pk_size) = (0, 0);
+
+    for i in 0..iterations {
+        let start = Instant::now();
+        let pair = capss::keys::generate();
+        keygen_total += start.elapsed();
+
+        let message = format!("benchmark message for post quantum signatures #{i}");
+
+        let start = Instant::now();
+        let signature = capss::sig::sign(&parameters, &pair, message.as_bytes());
+        sign_total += start.elapsed();
+
+        let start = Instant::now();
+        assert!(capss::sig::verify(&parameters, &pair.public, message.as_bytes(), &signature));
+        verify_total += start.elapsed();
+
+        sig_size = signature.size_bytes();
+        pk_size = capss::keys::PUBLIC_KEY_BYTES;
+    }
+
+    print_row(
+        "CAPSS-128",
+        avg(keygen_total, iterations),
+        avg(sign_total, iterations),
+        avg(verify_total, iterations),
+        sig_size,
+        pk_size,
+    );
+}
+
 fn main() {
     println!(
         "{:<12} {:>12} {:>12} {:>12} {:>12} {:>11}",
@@ -208,6 +243,9 @@ fn main() {
     bench_xmss(10, 50);
     bench_leansig(50);
     bench_loquat(10);
+    // Only a few runs: CAPSS signing is slow by design, dominated by
+    // committing 2^14 polynomial evaluations and hashing that many leaves.
+    bench_capss(3);
 
     println!(
         "\nNotes:\n\
@@ -215,7 +253,8 @@ fn main() {
            Poseidon2 is slower here (SHA-256 has dedicated CPU instructions) but is\n\
            roughly 490x cheaper inside a circuit. See circuits/README.md.\n\
          - Every hash-based scheme above is limited in how many messages one key\n\
-           may sign (1 for Lamport/WOTS/leanSig, 2^h for XMSS). Loquat is not:\n\
-           one key signs unlimited messages, which is what the large signature buys."
+           may sign (1 for Lamport/WOTS/leanSig, 2^h for XMSS). Loquat and CAPSS\n\
+           are not: one key signs unlimited messages, which is what their larger\n\
+           signatures buy."
     );
 }

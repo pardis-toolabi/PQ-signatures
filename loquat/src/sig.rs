@@ -38,23 +38,20 @@ pub struct Signature {
     sum_mask: Fp2,
     open_c: Vec<(Vec<Fp2>, MerklePath)>,
     open_s: Vec<(Vec<Fp2>, MerklePath)>,
-    /// Paths only. The `h` values themselves are determined by everything
-    /// else at the same point, so the verifier solves for them.
-    open_h: Vec<MerklePath>,
+    open_h: Vec<(Vec<Fp2>, MerklePath)>,
     fri: fri::Proof,
 }
 
 impl Signature {
     pub fn size_bytes(&self, params: &Params) -> usize {
-        let openings: usize = [&self.open_c, &self.open_s]
+        let openings: usize = [&self.open_c, &self.open_s, &self.open_h]
             .iter()
             .map(|set| {
                 set.iter()
                     .map(|(values, path)| values.len() * 32 + path.siblings.len() * 32)
                     .sum::<usize>()
             })
-            .sum::<usize>()
-            + self.open_h.iter().map(|path| path.siblings.len() * 32).sum::<usize>();
+            .sum::<usize>();
         self.t_bits.len().div_ceil(8)
             + self.o_values.len() * 16
             + 3 * 32
@@ -351,7 +348,16 @@ pub fn sign(params: &Params, secret: &SecretKey, message: &[u8]) -> Signature {
         })
         .collect();
 
-    let open_h = query_indices.iter().map(|k| tree_h.open(*k)).collect();
+    let open_h = query_indices
+        .iter()
+        .map(|k| {
+            let values: Vec<Fp2> = fiber_indices(params.u_size, fiber, *k)
+                .into_iter()
+                .map(|index| h_evaluations[index])
+                .collect();
+            (values, tree_h.open(*k))
+        })
+        .collect();
 
     let _ = u_generator;
 
@@ -432,9 +438,9 @@ pub fn verify(params: &Params, public: &PublicKey, message: &[u8], signature: &S
     }
     let claimed_sum = z * mu + signature.sum_mask;
 
-    // --- Check the low-degree test --------------------------------------
-    let layer0 = match fri::verify(params, &signature.fri, &mut transcript) {
-        Some(openings) => openings,
+    // --- Replay FRI's transcript to learn where it will query ------------
+    let plan = match fri::replay_transcript(params, &signature.fri, &mut transcript) {
+        Some(plan) => plan,
         None => return false,
     };
 
@@ -448,22 +454,31 @@ pub fn verify(params: &Params, public: &PublicKey, message: &[u8], signature: &S
     let q_polynomials = build_q_polynomials(params, &lambda, &index_choices);
     let h_size_field = Fp2::from_base(Fp::new(params.h_size as u128));
 
-    // --- Tie the opened codewords to the batched one FRI tested ---------
-    for (query, (k, batched_values)) in layer0.iter().enumerate() {
+    // --- Evaluate the batched codeword at every queried point ------------
+    // FRI's first layer is virtual: nothing about it was sent, and it has
+    // no tree. Its values are computed here from the opened oracles — all
+    // committed before any challenge was drawn — and the fold into layer
+    // 1's commitment is what checks them.
+    let mut layer0_values = Vec::with_capacity(params.kappa);
+    for (query, k) in plan.indices.iter().enumerate() {
         let (c_values, c_path) = &signature.open_c[query];
         let (s_values, s_path) = &signature.open_s[query];
-        let h_path = &signature.open_h[query];
+        let (h_values, h_path) = &signature.open_h[query];
 
-        if c_values.len() != params.n * fiber || s_values.len() != fiber {
+        if c_values.len() != params.n * fiber
+            || s_values.len() != fiber
+            || h_values.len() != fiber
+        {
             return false;
         }
         if !verify_with_cap(&signature.cap_c, hash_fp2_slice(b"loquat-c", c_values), *k, c_path)
             || !verify_with_cap(&signature.cap_s, hash_fp2_slice(b"loquat-s", s_values), *k, s_path)
+            || !verify_with_cap(&signature.cap_h, hash_fp2_slice(b"loquat-h", h_values), *k, h_path)
         {
             return false;
         }
 
-        let mut h_values = Vec::with_capacity(fiber);
+        let mut batched_fiber = Vec::with_capacity(fiber);
         for (slot, index) in fiber_indices(params.u_size, fiber, *k).into_iter().enumerate() {
             let point = u_generator.pow(index as u128);
 
@@ -478,43 +493,29 @@ pub fn verify(params: &Params, public: &PublicKey, message: &[u8], signature: &S
             }
 
             let s_value = s_values[slot];
+            let h_value = h_values[slot];
             let f_prime_value = z * f_value + s_value;
+
+            // The rational constraint `p` is never sent; the verifier
+            // derives it, which is what keeps the proof small.
             let vanishing_value = point.pow(params.h_size as u128) - vanishing_offset;
+            let numerator = h_size_field * f_prime_value
+                - h_size_field * vanishing_value * h_value
+                - claimed_sum;
             let denominator = match (h_size_field * point).inverse() {
                 Some(inverse) => inverse,
                 None => return false,
             };
+            let p_value = numerator * denominator;
 
-            // What the batched codeword would be for a given `h`. The
-            // rational constraint `p` is never sent either; the verifier
-            // derives it, which is what keeps the proof small.
-            let batched_for = |h_value: Fp2| {
-                let numerator = h_size_field * f_prime_value
-                    - h_size_field * vanishing_value * h_value
-                    - claimed_sum;
-                let p_value = numerator * denominator;
-                batched_value_at(params, &e, point, &c_at_point, s_value, h_value, p_value)
-            };
-
-            // That map is affine in `h`, and FRI has already fixed the
-            // batched value, so `h` is solved for rather than sent. Nothing
-            // is taken on trust: the solved values still have to reproduce
-            // the leaf the signer committed `h` to, below.
-            let at_zero = batched_for(Fp2::ZERO);
-            let slope = batched_for(Fp2::ONE) - at_zero;
-            let h_value = match slope.inverse() {
-                Some(inverse) => (batched_values[slot] - at_zero) * inverse,
-                None => return false,
-            };
-            h_values.push(h_value);
+            batched_fiber.push(batched_value_at(
+                params, &e, point, &c_at_point, s_value, h_value, p_value,
+            ));
         }
-
-        if !verify_with_cap(&signature.cap_h, hash_fp2_slice(b"loquat-h", &h_values), *k, h_path) {
-            return false;
-        }
+        layer0_values.push(batched_fiber);
     }
 
-    true
+    fri::check_queries(params, &signature.fri, &plan, &layer0_values)
 }
 
 #[cfg(test)]
@@ -594,16 +595,26 @@ mod tests {
         assert!(!verify(&params, &public, b"hello", &signature));
     }
 
-    /// The `h` openings are solved for rather than sent, so the only thing
-    /// binding them is the Merkle path they are checked against. Breaking
-    /// that path must be caught, otherwise the solved values would be
-    /// accepted without ever being tied to what the signer committed to.
     #[test]
     fn tampering_with_the_h_path_is_caught() {
         let params = Params::testing();
         let (secret, public) = keys::generate(&params);
         let mut signature = sign(&params, &secret, b"hello");
-        signature.open_h[0].siblings[0][0] ^= 1;
+        signature.open_h[0].1.siblings[0][0] ^= 1;
+        assert!(!verify(&params, &public, b"hello", &signature));
+    }
+
+    /// The `h` values feed the virtual FRI layer, so a tampered value has
+    /// two chances to be caught: its own Merkle leaf, and — if a forger
+    /// re-hashed a whole fake leaf — the fold into layer 1's commitment.
+    /// This exercises the first; `a_restitched_h_commitment_is_caught`
+    /// covers the road toward the second.
+    #[test]
+    fn tampering_with_an_h_value_is_caught() {
+        let params = Params::testing();
+        let (secret, public) = keys::generate(&params);
+        let mut signature = sign(&params, &secret, b"hello");
+        signature.open_h[0].0[0] = signature.open_h[0].0[0] + Fp2::ONE;
         assert!(!verify(&params, &public, b"hello", &signature));
     }
 

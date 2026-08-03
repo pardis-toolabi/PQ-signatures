@@ -11,10 +11,10 @@ in-circuit, and the other way round.
 ## Running them
 
 ```
-cd lamport_verify        # or wots_verify, xmss_verify, leansig_verify, loquat_verify
-nargo compile
+cd lamport_verify        # or wots_verify, xmss_verify, leansig_verify,
+nargo compile            #    loquat_verify, capss_verify
 bb gates -b target/lamport_verify.json
-nargo test               # loquat_verify carries satisfiability tests
+nargo test               # loquat_verify and capss_verify carry satisfiability tests
 ```
 
 `circuit_size` is the number to look at — that is the real gate count
@@ -45,8 +45,8 @@ to be rebuilt bit by bit out of field arithmetic.
 
 ## Circuit sizes
 
-All four circuits use Poseidon2 and the same conventions (see below), so
-these are directly comparable:
+All of these circuits use Poseidon2 and the same conventions (see below),
+so they are directly comparable:
 
 | Circuit | Gates | Hash calls | Notes |
 |---------|-------|------------|-------|
@@ -54,7 +54,8 @@ these are directly comparable:
 | `leansig_verify` | 72,304 | 56 x 15 | 56 chains, target sum |
 | `wots_verify` | 84,582 | 66 x 15 | 66 chains incl. checksum |
 | `xmss_verify` | 86,596 | 66 x 15 + 10 | WOTS + height-10 Merkle path |
-| `loquat_verify` | 98,633 | ~916 | FRI queries + Fiat-Shamir — see below |
+| `capss_verify` | 97,199 | ~488 | SmallWood PIOP: openings + full FS replay — see below |
+| `loquat_verify` | 100,937 | ~916 | FRI queries + Fiat-Shamir + residuosity — see below |
 
 ### Lamport wins, which is not what the native numbers suggest
 
@@ -109,7 +110,17 @@ state, and squeezing the challenge back out. A prover who wants a
 friendlier challenge has to change a cap, and the caps are what the Merkle
 openings are checked against.
 
-At the Rust crate's real Loquat-128 parameters that lands at **98,633
+It also carries Loquat's **128 Legendre residuosity checks**, the part of
+the verifier that actually uses the public key. Computed naively each one
+is an exponentiation, ~380 gates. Instead the circuit uses the paper's own
+trick (its Algorithm 8): the prover supplies a square root `w`, and the
+circuit checks `w * w == o` when the claimed bit says "residue" and
+`w * w == 5 * o` when it says "non-residue" (5 is a fixed non-residue of
+BN254's scalar field, checked by Euler's criterion). With an inverse check
+pinning `o != 0`, all 128 checks together cost **896 gates — 7 per check
+instead of ~380**.
+
+At the Rust crate's real Loquat-128 parameters that lands at **100,937
 gates** — roughly the same ballpark as XMSS, reached by completely
 different means.
 
@@ -117,10 +128,12 @@ Where the gates go is the interesting part:
 
 - Merkle paths: 32 queries x 4 rounds x 6 levels = **768 hashes**
 - Leaf hashes: 32 x 4 = **128 hashes**
-- Total: 896 Poseidon2 calls, about **65,000 gates, or ~66% of the
+- Total: 896 Poseidon2 calls, about **65,000 gates, or ~64% of the
   circuit**
 - Fiat-Shamir replay: only **3,135 gates (+3.3%)**, about 20 more hash
   calls
+- All 128 residuosity checks: **896 gates (+0.9%)**, thanks to the
+  witness-square-root trick
 
 So a FRI verifier is still, overwhelmingly, a *Merkle path verifier*. The
 polynomial arithmetic — Lagrange-interpolating each fiber and evaluating
@@ -135,10 +148,12 @@ clever cryptography; it is hashing Merkle paths.
 
 **Two caveats, and they matter:**
 
-1. This is still **not a complete verifier**. The 128 Legendre symbol
-   checks (`L_0(o) == pk_I + T`) are not here, and a Legendre symbol is an
-   exponentiation, so they are not cheap. The FRI query indices are also
-   pinned as public input rather than squeezed from the transcript.
+1. This is still **not a complete verifier**. The residuosity checks are
+   here now, but their inputs (`o_values`, `t_bits`) are not absorbed into
+   the same transcript that yields the FRI challenges — the real scheme's
+   h1/h2 phases. The FRI query indices are pinned as public input rather
+   than squeezed from the transcript, and the sumcheck opening consistency
+   the Rust `sig.rs` verifies is absent. It is a shape-measurement.
 2. **This number is not comparable to the paper's 148,825 R1CS.** That
    figure assumes the algebraic Griffin hash and the real field (`F_p2`
    over `p = 2^127 - 1`). This circuit runs Poseidon2 over BN254, because
@@ -146,14 +161,97 @@ clever cryptography; it is hashing Merkle paths.
    measurement. Different hash, different field, different scope — treat
    the two as unrelated numbers.
 
-The circuit carries five Noir tests (`nargo test`): one that builds a
-consistent opening and four that break it — a severed layer link, a
-tampered Merkle commitment, a tampered final polynomial, and a tampered
-cap entry that **no query's path even touches** (that last one only fails
+The circuit carries eight Noir tests (`nargo test`): one that builds a
+consistent opening and seven that break it — a severed layer link, a
+tampered Merkle commitment, a tampered final polynomial, a tampered
+cap entry that **no query's path even touches** (that one only fails
 because the whole cap feeds the derived challenge, so it is the test that
-actually demonstrates Fiat-Shamir binding). A circuit that can never be
-satisfied still compiles and still reports a gate count, so those tests
-are what make the number meaningful.
+actually demonstrates Fiat-Shamir binding), an opening pointed at the
+wrong cap slot, a flipped residuosity bit, and a zero Legendre symbol. A
+circuit that can never be satisfied still compiles and still reports a
+gate count, so those tests are what make the number meaningful.
+
+### CAPSS: the "cheap in-circuit verifier" claim, measured
+
+CAPSS's whole selling point is cheap in-circuit verification — the paper
+reports ~20-35K R1CS for its verifier. `capss_verify` measures the shape
+of that verifier under this repo's conventions: **97,199 gates**, within
+2% of `loquat_verify`. At these parameters and with Poseidon2 over BN254,
+the headline claim does **not** survive: the two proof-based schemes cost
+essentially the same to check in-circuit.
+
+The circuit mirrors `capss::piop::verify` at the Rust crate's `level_128`
+parameters (l' = 20 opened leaves out of N = 2^14, rho = 2, s = 11,
+16 witness rows, 8 parallel + 88 aggregated constraints, deg_q = 221). It
+checks all four things that verifier checks: a full Fiat-Shamir replay
+(message and key in, then cap, then the 404 transmitted Q_k coefficients,
+with all 352 challenge coefficients *and* the 20 opening indices squeezed
+back out in-circuit — nothing is pinned as a public input), 20 Merkle
+openings against a 16-wide cap through depth-10 paths, the corrected
+Flystel constraint combination at each opened point, and the load-bearing
+identity: reconstruct each Q_k's low 20 coefficients by interpolation
+through the 20 opened evaluations, then require
+`sum over omega of Q_k(omega) == 0`.
+
+Where the gates go, measured by compiling stripped variants (the pieces
+sum exactly to 97,199):
+
+| Component | Gates | Share |
+|-----------|-------|-------|
+| Opening-index derivation (20 canonical bit decompositions) | 35,703 | 37% |
+| Merkle openings (20 leaf hashes + 200 path hashes) | 25,746 | 26% |
+| Constraint combination at the 20 points (Flystel + weights) | 13,521 | 14% |
+| Q_k reconstruction + sum-to-zero (Horner + interpolation) | 12,065 | 12% |
+| Transcript sponge (~268 Poseidon2 permutations) | 9,421 | 10% |
+| Key digest + plumbing | 743 | 1% |
+
+Two findings in there:
+
+- **The single most expensive thing is not hashing — it is turning
+  squeezed field elements into leaf indices.** Each of the 20 opening
+  indices needs a canonical 254-bit decomposition of a challenge
+  (~1,250-1,800 gates each) before its low 14 bits can drive a Merkle
+  path. `loquat_verify` never pays this because its query indices stay
+  pinned as public inputs — which is listed there as a gap. This is what
+  closing that gap costs.
+- Counting everything hash-and-transcript-shaped together (sponge +
+  index derivation + Merkle), **73% of the circuit is Fiat-Shamir and
+  Merkle work**; the actual polynomial algebra — the Flystel evaluations,
+  two 20-point Lagrange interpolations (divisions and all), and the sum
+  checks — is 26%. The CAPSS authors report Merkle verification alone at
+  41-63% of their constraints; same shape.
+
+Why this lands nowhere near the paper's ~24K: the paper's BN254 instances
+use an algebraic hash (Griffin/Anemoi) *natively over BN254*, with rho = 1
+and far fewer challenge coefficients, because their field is 254 bits
+wide. This circuit inherits the Rust crate's Goldilocks-shaped parameter
+set (rho = 2, 352 challenges, 404 transmitted coefficients — needed
+because a 64-bit field is too small for one shot), and hashes with
+Poseidon2. Different hash, different field, different parameter set:
+**treat 97,199 and ~24K as unrelated numbers.** What the measurement does
+say is that under the *same* conventions as every other row in the table,
+CAPSS verification is FRI-verification-priced, not magically cheaper.
+
+What is omitted relative to `capss::piop::verify`: the DECS batched
+polynomials R_k (their reconstruction is self-consistent by construction
+in the Rust composition and contributes no independent check — documented
+in `capss/src/piop.rs`), the salt, and the index binding inside the leaf
+hash (the path position binds it instead, as in `loquat_verify`). The
+Flystel identity is the real corrected one from `notes/capss-spec.md`,
+with invented constants and a placeholder linear layer — cost-neutral,
+since fixed linear maps are nearly free in-circuit.
+
+The circuit carries six Noir tests. `build_instance` is an unconstrained
+honest prover: it runs the Flystel forward over the constraint columns
+(seventh roots are cheap natively), commits real degree-30 row
+polynomials over all 2^14 leaves, replays the transcript, and opens
+whatever indices it derives. One test accepts that instance; five break
+it — a commitment that disagrees with the transmitted Q_k (every hash,
+path, and transcript step stays valid, so only the sum-to-zero identity
+can and does catch it — that is the test that shows which check does the
+work), a tampered cap entry, a tampered transmitted high coefficient
+(caught because Fiat-Shamir moves the opening indices), a tampered mask
+opening, and a tampered message.
 
 ### The Merkle tree is nearly free
 
@@ -204,3 +302,6 @@ message digits versus 64.
 - Native benchmarks will actively mislead you here. Lamport is the biggest
   signature and the cheapest circuit; leanSig's headline native saving
   does not survive arithmetization at all.
+- Paper claims about in-circuit cost are parameter- and hash-bound. CAPSS
+  is advertised as the scheme with the cheap verifier; measured under the
+  same conventions as everything else, it prices within 2% of Loquat.
