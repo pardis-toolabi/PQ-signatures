@@ -9,6 +9,10 @@ none of it relies on factoring or discrete logs, which is what Shor's
 algorithm breaks. Instead the schemes are built from hash functions, the
 Legendre PRF, or a single permutation.
 
+**New to cryptography?** Start with [`LEARN.md`](LEARN.md) — a from-zero
+walkthrough of every scheme here, assuming no background beyond
+multiplication and remainders.
+
 ## The schemes
 
 Each builds on the last, so reading them in order works well.
@@ -27,7 +31,7 @@ Each builds on the last, so reading them in order works well.
 ## Running it
 
 ```
-cargo test --workspace          # 170 tests
+cargo test --workspace          # 173 tests
 cargo run --release -p compare  # the table below
 cargo run --release -p loquat --example loquat128
 ```
@@ -47,7 +51,7 @@ the public key.
 | XMSS (h=10) | 125 ms | 55 µs | 63 µs | 2.4 KB | 32 B | 1024 |
 | leanSig | 768 µs | 694 µs | 308 µs | 1.8 KB | 32 B | **1** |
 | Loquat-128 | 26 ms | 18 ms | 2.9 ms | 62.3 KB | 4 KB | **unlimited** |
-| CAPSS-128 | 21 µs | **1.63 s** | 8.7 ms | 18.7 KB | **64 B** | **unlimited** |
+| CAPSS-128 | 21 µs | **1.63 s** | 8.7 ms | 18.3 KB | **64 B** | **unlimited** |
 
 ## In-circuit cost
 
@@ -67,7 +71,7 @@ with `bb gates`. This is a *different question* with different answers.
 consistency, final polynomial check — plus **in-circuit Fiat-Shamir**: the
 fold challenges are derived inside the circuit from the Merkle caps rather
 than trusted as inputs. That replay cost only **3,135 gates (+3.3%)**,
-because it adds ~20 hash calls against the 896 already spent on Merkle
+because it adds 17 hash calls against the 896 already spent on Merkle
 paths.
 
 It now also carries the **128 Legendre residuosity checks**, done the way
@@ -82,7 +86,7 @@ R1CS**, which assumes the Griffin hash and the real field. Details in
 
 `capss_verify` puts CAPSS's headline claim — cheap in-circuit
 verification, ~24K R1CS in the paper — under the same measurement, and
-the claim does not survive it: **97,199 gates, within 2% of Loquat**. The
+the claim does not survive it: **97,199 gates, within 4% of Loquat**. The
 circuit mirrors `capss::piop::verify` at the Rust crate's parameters,
 including a *complete* Fiat-Shamir replay (all 352 challenge coefficients
 and all 20 opening indices are squeezed in-circuit — nothing pinned), 20
@@ -115,7 +119,7 @@ handle worst.
 
 **3. The target sum does not buy in-circuit what it buys natively.**
 leanSig's target sum pins the verifier to exactly 385 chain steps instead
-of WOTS's ~500 — a real native win. In-circuit that saving vanishes, since
+of WOTS's ~510 — a real native win. In-circuit that saving vanishes, since
 the circuit still budgets 15 steps per chain regardless. What survives is
 the smaller chain *count* (56 vs 66), which is the ~15% actually measured.
 
@@ -126,8 +130,9 @@ When verification happens inside a proof, there is little reason to accept
 a one-time scheme.
 
 **4b. Even a FRI verifier is mostly a Merkle verifier.** Of
-`loquat_verify`'s 100,937 gates, ~65,000 (about 64%) are the 896 Poseidon2
-calls verifying Merkle paths and leaves. The polynomial arithmetic that
+`loquat_verify`'s 100,937 gates, ~75,000 (about 74%) are the 896 Poseidon2
+calls — 1,024 permutations, since leaf hashes take two each — verifying
+Merkle paths and leaves. The polynomial arithmetic that
 makes FRI *interesting* — interpolating each fiber, evaluating at the
 round challenge, divisions included — is the minority of the cost, and
 Fiat-Shamir replay is only 3%. The CAPSS authors report the same shape in
@@ -146,9 +151,10 @@ stateless and unlimited, which is what their much larger signatures buy.
 
 **7. The two proof-based schemes trade in opposite directions.** Loquat
 signs in 18 ms with a 62.3 KB signature; CAPSS signs in **1.63 seconds**
-with an 18.7 KB one. CAPSS also has the smallest public key here by a wide
+with an 18.3 KB one. CAPSS also has the smallest public key here by a wide
 margin — **64 bytes**, against Loquat's 4 KB and Lamport's 16 KB — because
-its key is literally one permutation input and its truncated output.
+its key is just the public half of one permutation input plus the
+truncated output (the other half of the input *is* the secret key).
 
 That slow signing is not an accident of this implementation. It is
 inherent: signing commits `2^14` polynomial evaluations and hashes that
@@ -161,7 +167,7 @@ and even more so when verification happens inside a proof.
 ## Status
 
 **Implemented, tested, and measured:** Lamport, WOTS, XMSS, leanSig,
-Loquat, CAPSS, and six Noir circuits. **170 Rust tests plus 14 Noir tests
+Loquat, CAPSS, and six Noir circuits. **173 Rust tests plus 14 Noir tests
 pass, and `cargo clippy --workspace` is clean.**
 
 **Loquat** is a full implementation of ePrint 2024/868 at the paper's real
@@ -199,7 +205,9 @@ every per-round constraint and is caught only by the wiring. See
 in-circuit Fiat-Shamir, and the 128 Legendre residuosity checks, and
 carries its own satisfiability tests, but it does not absorb the
 residuosity inputs into the FRI transcript, derive the query indices, or
-check the sumcheck opening consistency, and it uses Poseidon2/BN254 rather
+check the sumcheck opening consistency; it models a simplified uniform
+tree geometry (four 1024-leaf trees) rather than the crate's virtual
+layer 0 and shrinking layers; and it uses Poseidon2/BN254 rather
 than Griffin over `F_p2`. Its 100,937 gates and the paper's 148,825 R1CS
 are **not** the same measurement.
 
@@ -217,5 +225,6 @@ measurement either — different hash, field, and parameter set.
 These are written to be read and understood, not deployed. Corners are
 simplified on purpose and documented where it matters — for example the
 Poseidon2 round constants here are generated deterministically rather than
-by the reference Grain LFSR, so they will not interoperate with other
-Poseidon2 libraries. **Do not use any of this to protect anything real.**
+by the reference Grain LFSR, and its internal-matrix diagonal is invented
+rather than the vetted reference one, so it will not interoperate with
+other Poseidon2 libraries. **Do not use any of this to protect anything real.**

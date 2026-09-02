@@ -55,7 +55,7 @@ so they are directly comparable:
 | `wots_verify` | 84,582 | 66 x 15 | 66 chains incl. checksum |
 | `xmss_verify` | 86,596 | 66 x 15 + 10 | WOTS + height-10 Merkle path |
 | `capss_verify` | 97,199 | ~488 | SmallWood PIOP: openings + full FS replay — see below |
-| `loquat_verify` | 100,937 | ~916 | FRI queries + Fiat-Shamir + residuosity — see below |
+| `loquat_verify` | 100,937 | ~913 | FRI queries + Fiat-Shamir + residuosity — see below |
 
 ### Lamport wins, which is not what the native numbers suggest
 
@@ -81,7 +81,7 @@ leanSig comes out ~15% cheaper than WOTS, but not for the reason it is
 cheaper natively.
 
 Natively, the target sum pins the verifier's total to exactly 385 chain
-steps instead of WOTS's ~500. In-circuit that saving vanishes: the circuit
+steps instead of WOTS's ~510. In-circuit that saving vanishes: the circuit
 still budgets the full 15 steps per chain, so it pays 56 x 15 = 840
 regardless of what the digits actually are.
 
@@ -120,18 +120,25 @@ BN254's scalar field, checked by Euler's criterion). With an inverse check
 pinning `o != 0`, all 128 checks together cost **896 gates — 7 per check
 instead of ~380**.
 
-At the Rust crate's real Loquat-128 parameters that lands at **100,937
-gates** — roughly the same ballpark as XMSS, reached by completely
-different means.
+At the Rust crate's Loquat-128 parameters (kappa, rounds, eta, and cap
+all match; the tree geometry is simplified — caveat 2 below) that lands
+at **100,937 gates** — roughly the same ballpark as XMSS, reached by
+completely different means.
 
-Where the gates go is the interesting part:
+Where the gates go is the interesting part (percentages measured by
+compiling the circuit with the component stripped):
 
-- Merkle paths: 32 queries x 4 rounds x 6 levels = **768 hashes**
-- Leaf hashes: 32 x 4 = **128 hashes**
-- Total: 896 Poseidon2 calls, about **65,000 gates, or ~64% of the
-  circuit**
-- Fiat-Shamir replay: only **3,135 gates (+3.3%)**, about 20 more hash
-  calls
+- Merkle paths: 32 queries x 4 rounds x 6 levels = **768 hashes** (the
+  circuit's modeled geometry — see caveat 2 below)
+- Leaf hashes: 32 x 4 = **128 hashes** (four inputs each, so two
+  Poseidon2 permutations per call)
+- Total: 896 hash calls = 1,024 permutations, about **75,000 gates of
+  pure hashing, ~74% of the circuit**; the Merkle-opening blocks as a
+  whole measure **86,274 gates (85%)** — stripping them drops the
+  circuit to 14,663
+- Fiat-Shamir replay: only **3,135 gates (+3.3%)**, 17 more hash calls
+  (re-measured by compiling a challenge-pinned variant: 97,802 vs
+  100,937)
 - All 128 residuosity checks: **896 gates (+0.9%)**, thanks to the
   witness-square-root trick
 
@@ -146,15 +153,29 @@ That Fiat-Shamir number is worth dwelling on. Making a verifier
 — cost 3% here. The expensive part of a proof-system verifier is not the
 clever cryptography; it is hashing Merkle paths.
 
-**Two caveats, and they matter:**
+**Three caveats, and they matter:**
 
 1. This is still **not a complete verifier**. The residuosity checks are
    here now, but their inputs (`o_values`, `t_bits`) are not absorbed into
    the same transcript that yields the FRI challenges — the real scheme's
    h1/h2 phases. The FRI query indices are pinned as public input rather
    than squeezed from the transcript, and the sumcheck opening consistency
-   the Rust `sig.rs` verifies is absent. It is a shape-measurement.
-2. **This number is not comparable to the paper's 148,825 R1CS.** That
+   the Rust `sig.rs` verifies is absent. It is a shape-measurement. The
+   pinned surface is wider than just the indices: the per-round carried
+   slots, index bits, domain points, and final evaluation points are all
+   separate public inputs with no cross-round consistency constraints
+   between them, so an outer context has to validate that whole bundle
+   together (position_(r+1) = position mod count, slot = position div
+   count, final point = g^position), not the indices alone.
+2. **The tree geometry is not the crate's.** In `loquat/src/fri.rs` at
+   Loquat-128, layer 0 is virtual — no tree, nothing absorbed before the
+   first fold challenge — and each committed layer shrinks 4x: three
+   trees of 256/64/16 leaves, path depths 4/2/0 below the cap. This
+   circuit models four committed rounds, each a uniform 1024-leaf tree
+   with a depth-6 path and a cap absorbed before every challenge, so it
+   does roughly 4x the crate's per-query Merkle work. The 100,937 gates
+   measure that modeled shape, not `fri::verify`'s exact geometry.
+3. **This number is not comparable to the paper's 148,825 R1CS.** That
    figure assumes the algebraic Griffin hash and the real field (`F_p2`
    over `p = 2^127 - 1`). This circuit runs Poseidon2 over BN254, because
    emulating a 127-bit extension field inside BN254 would swamp the
@@ -176,7 +197,7 @@ gate count, so those tests are what make the number meaningful.
 CAPSS's whole selling point is cheap in-circuit verification — the paper
 reports ~20-35K R1CS for its verifier. `capss_verify` measures the shape
 of that verifier under this repo's conventions: **97,199 gates**, within
-2% of `loquat_verify`. At these parameters and with Poseidon2 over BN254,
+4% of `loquat_verify`. At these parameters and with Poseidon2 over BN254,
 the headline claim does **not** survive: the two proof-based schemes cost
 essentially the same to check in-circuit.
 
@@ -288,7 +309,11 @@ them byte-compatible would mean emulating BabyBear arithmetic inside
 BN254, which is slow and would distort exactly the numbers we are trying
 to measure. Sizes differ slightly for the same reason — BN254 holds 254
 bits, so Lamport uses 254 chains here versus 256 in Rust, and WOTS uses 63
-message digits versus 64.
+message digits versus 64. One consequence of the 63-digit packing worth
+saying out loud: `wots_verify` and `xmss_verify` consume only 63 x 4 = 252
+of the digest's 254 bits, so two public digests differing only in the top
+two bits accept the same signature. The Rust crates cover all 256 bits;
+in-circuit those two bits are simply outside the measured statement.
 
 ## Bottom line
 
@@ -304,4 +329,4 @@ message digits versus 64.
   does not survive arithmetization at all.
 - Paper claims about in-circuit cost are parameter- and hash-bound. CAPSS
   is advertised as the scheme with the cheap verifier; measured under the
-  same conventions as everything else, it prices within 2% of Loquat.
+  same conventions as everything else, it prices within 4% of Loquat.

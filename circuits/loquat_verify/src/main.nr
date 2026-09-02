@@ -32,7 +32,14 @@
 //! What it is good for: showing how a proof-system verifier is shaped
 //! differently from a hash-chain verifier, and where its gates go.
 //!
-//! Ported from `loquat/src/fri.rs::verify`, which is the tested reference.
+//! Modeled on `loquat/src/fri.rs::verify`, which is the tested reference --
+//! but the tree geometry is simplified: the crate's layer 0 is virtual
+//! (no tree, nothing absorbed before the first fold challenge) and its
+//! committed layers shrink 4x per round (256/64/16 leaves, path depths
+//! 4/2/0 below the cap), while this circuit models four uniform
+//! 1024-leaf trees with depth-6 paths and a cap absorbed before every
+//! challenge -- roughly 4x the crate's per-query Merkle work. See the
+//! caveats in ../README.md.
 
 use poseidon::poseidon2::Poseidon2;
 
@@ -44,7 +51,8 @@ global ROUNDS: u32 = 4;
 global FIBER: u32 = 4;
 /// Merkle path length below the cap: log2(1024 leaves) - 4 cap levels.
 global DEPTH: u32 = 6;
-/// Cap width in nodes, from the paper's `ceil(log2(kappa) - 1) = 4`.
+/// Cap width in nodes: 2^4 = 16, with 4 = the paper's
+/// `ceil(log2(kappa) - 1)` cap *depth*.
 global CAP: u32 = 16;
 /// Bits needed to name a cap slot: log2(CAP).
 global CAP_BITS: u32 = 4;
@@ -102,7 +110,9 @@ fn squeeze(state: Field, label: Field) -> (Field, Field) {
 /// Replays the FRI half of the Fiat-Shamir transcript: absorb round `i`'s
 /// root, then squeeze round `i`'s fold challenge, chaining the state
 /// throughout. Round `i`'s challenge therefore depends on caps `0..=i` and
-/// on nothing after them, matching `fri::verify`.
+/// on nothing after them. (In `fri::verify` itself the first challenge
+/// absorbs no cap -- layer 0 is virtual there; this circuit's uniform
+/// absorb-then-squeeze schedule is part of its simplified geometry.)
 ///
 /// `fri::verify` carries on from here by absorbing the final coefficients
 /// and squeezing the query indices. Those absorbs are omitted because the
