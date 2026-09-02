@@ -225,14 +225,18 @@ signing phases, and all three verification steps, including the univariate
 sumcheck, FRI with tree-capped Merkle commitments, and a domain-separated
 Fiat-Shamir transcript.
 
-**What is validated (64 tests):** field arithmetic against schoolbook and
+**What is validated (65 tests):** field arithmetic against schoolbook and
 known identities; the FFT against naive Horner evaluation; Legendre
 multiplicativity; the arithmetisation identity directly; that the ZK mask
 does not disturb the sum; Merkle openings and every tampering variant; FRI
 accepting low-degree and rejecting high-degree, random, and tampered
-codewords; that a value the verifier rebuilds still has to land in the
-right slot of the right leaf; and end-to-end signing with eleven distinct
-tamper tests.
+codewords — including a *malicious* prover that ships the final layer's
+full interpolation instead of truncating to the degree bound, which an
+earlier version of the verifier accepted (the length check in
+`replay_transcript` is what rejects it, and without that check the
+low-degree test enforces nothing); that a value the verifier rebuilds
+still has to land in the right slot of the right leaf; and end-to-end
+signing with eleven distinct tamper tests.
 
 **Deliberate deviations from the reference implementation.** The authors'
 LoquatPy is an explicit proof-of-concept and has shortcuts that are not
@@ -250,6 +254,14 @@ sound; this follows the paper instead:
   them keeps the public parameters to one string instead of 512 KB.
 - Each witness polynomial gets its own ZK mask rather than sharing one,
   which is the safer reading.
+- The FRI batching stacks all seven committed polynomials (`c'_1..c'_4`,
+  `s`, `h`, `p`) as separate rows with a challenge vector `e` of 14
+  extension elements; the paper's Algorithm 5 stacks four rows with
+  `e` of 8. Per-row is the more conservative reading (each polynomial
+  keeps its own degree bound) and costs no signature bytes.
+- Sizes are computed from the struct layout (`size_bytes`), not from a
+  byte serializer — none exists. The arithmetic is honest, but no wire
+  format has ever been round-tripped.
 
 **What this is not.** It has no reference test vectors to check against —
 none are published for Loquat, so "passes its own tests" is genuinely

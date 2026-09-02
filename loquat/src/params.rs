@@ -114,6 +114,10 @@ impl Params {
             kappa,
             rounds,
             rate_numerator,
+            // floor(log2(kappa)) - 1; the paper's Fractal-style formula is
+            // ceil(log2(kappa) - 1), which differs when kappa is not a
+            // power of two (e.g. Loquat-80's kappa = 20: 3 here vs 4).
+            // Equal for both parameter sets shipped.
             cap_log: (kappa.ilog2()).saturating_sub(1),
             h_shift: odd_order_shift(),
             indices: derive_indices(l),

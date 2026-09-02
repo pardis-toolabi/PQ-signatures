@@ -217,6 +217,17 @@ pub fn replay_transcript(
         return None;
     }
 
+    // The degree bound is the whole point of FRI, and the final polynomial
+    // is where it is enforced: the honest prover truncates to this length,
+    // and a verifier that accepts more coefficients accepts *any* function
+    // on the final domain — every fold check then passes vacuously and the
+    // low-degree test proves nothing.
+    let final_size = params.domain_size_at(params.rounds);
+    let final_bound = (params.rate_numerator * final_size / params.u_size).max(1);
+    if proof.final_coefficients.len() > final_bound {
+        return None;
+    }
+
     let mut challenges = Vec::with_capacity(params.rounds);
     // The first fold challenge absorbs nothing new: layer 0 is a public
     // combination of oracles whose roots the caller already absorbed, so
@@ -484,6 +495,85 @@ mod tests {
         let (mut proof, _) = prove(&params, codeword.clone(), &mut prover_transcript);
         proof.queries[0].layers[0].coset_values[0] =
             proof.queries[0].layers[0].coset_values[0] + Fp2::ONE;
+
+        assert!(!run_verify(&params, &proof, b"fri-test", &codeword));
+    }
+
+    /// A dishonest `prove` that skips the final truncation, sending the
+    /// full interpolation of the last layer instead of only the first
+    /// `degree_bound` coefficients.
+    fn malicious_prove_untruncated(
+        params: &Params,
+        codeword: Vec<Fp2>,
+        transcript: &mut Transcript,
+    ) -> Proof {
+        let fiber = 1usize << params.eta;
+        let mut layers: Vec<Vec<Fp2>> = vec![codeword];
+        let mut trees: Vec<MerkleTree> = Vec::new();
+        let mut roots: Vec<Hash> = Vec::new();
+        let mut caps: Vec<Vec<Hash>> = Vec::new();
+
+        for round in 0..params.rounds {
+            if round > 0 {
+                let current = layers.last().unwrap();
+                let tree = MerkleTree::build(leaves_for(current, fiber), params.cap_log);
+                let root = tree.root();
+                transcript.absorb_hash(b"fri-root", &root);
+                roots.push(root);
+                caps.push(tree.cap().to_vec());
+                trees.push(tree);
+            }
+            let current = layers.last().unwrap().clone();
+            let challenge = transcript.challenge_fp2(b"fri-fold");
+            let log_size = params.u_log - params.eta * round as u32;
+            layers.push(fold(params, &current, challenge, log_size));
+        }
+
+        // The attack: no `truncate`, so the coefficients interpolate the
+        // final layer exactly and every fold-consistency check passes no
+        // matter what the layer-0 codeword was.
+        let final_layer = layers.last().unwrap();
+        let final_log = params.u_log - params.eta * params.rounds as u32;
+        let final_coefficients = interpolate_over_coset(final_layer, Fp2::ONE, final_log);
+        transcript.absorb_fp2_slice(b"fri-final", &final_coefficients);
+
+        let indices =
+            transcript.challenge_indices(b"fri-query", params.kappa, params.u_size / fiber);
+        let queries = indices
+            .iter()
+            .map(|start| {
+                let mut position = *start;
+                let mut openings = Vec::with_capacity(params.rounds.saturating_sub(1));
+                for round in 1..params.rounds {
+                    let codeword = &layers[round];
+                    let count = codeword.len() / fiber;
+                    let k = position % count;
+                    let mut values = fiber_values(codeword, fiber, k);
+                    values.remove(position / count);
+                    openings.push(LayerOpening {
+                        coset_values: values,
+                        path: trees[round - 1].open(k),
+                    });
+                    position = k;
+                }
+                Query { layers: openings }
+            })
+            .collect();
+
+        Proof { roots, caps, final_coefficients, queries }
+    }
+
+    #[test]
+    fn untruncated_final_coefficients_are_rejected() {
+        // Without the length bound in `replay_transcript`, this proof of a
+        // maximally high-degree codeword verifies: the untruncated final
+        // polynomial matches the final layer at every point, so all fold
+        // checks pass and the degree bound is never enforced.
+        let params = Params::testing();
+        let codeword = low_degree_codeword(&params, params.u_size);
+
+        let mut prover_transcript = Transcript::new(b"fri-test");
+        let proof = malicious_prove_untruncated(&params, codeword.clone(), &mut prover_transcript);
 
         assert!(!run_verify(&params, &proof, b"fri-test", &codeword));
     }

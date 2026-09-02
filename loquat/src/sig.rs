@@ -386,6 +386,11 @@ pub fn verify(params: &Params, public: &PublicKey, message: &[u8], signature: &S
     if signature.t_bits.len() != params.b || signature.o_values.len() != params.b {
         return false;
     }
+    // A malformed public key must fail cleanly, not panic when the index
+    // challenges reach past its end.
+    if public.len() != params.l {
+        return false;
+    }
     if hash_many(b"cap", &signature.cap_c) != signature.root_c
         || hash_many(b"cap", &signature.cap_s) != signature.root_s
         || hash_many(b"cap", &signature.cap_h) != signature.root_h
