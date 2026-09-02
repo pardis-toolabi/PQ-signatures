@@ -138,6 +138,11 @@ fn build_round_constants() -> ([[F; WIDTH]; FULL_ROUNDS], [F; PARTIAL_ROUNDS]) {
 /// `ones_matrix + diag(d)`, which needs only `WIDTH` multiplications
 /// instead of `WIDTH^2`. This is the main reason Poseidon2 is cheaper
 /// than Poseidon, both natively and in a circuit.
+///
+/// Like the round constants above, this diagonal is invented, not the
+/// vetted reference BabyBear-16 diagonal, and no invariant-subspace
+/// check has been run on it — another reason this permutation will not
+/// interoperate with (and is weaker than) standard Poseidon2.
 const INTERNAL_DIAGONAL: [u32; WIDTH] = [
     2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 16, 20, 24, 32, 64, 128,
 ];

@@ -72,12 +72,16 @@ to search longer to find randomness that hits a higher sum.
 
 This implementation uses 56 digits in base 16, with `T = 455`.
 
-Digits are roughly uniform over 0..15, so their sum centres on
-`56 x 7.5 = 420` with a standard deviation of about 34. Setting `T = 455`
-puts the target about one standard deviation above centre. Measured
-results:
+Digits are close to uniform over 0..15, so their sum would nominally
+centre on `56 x 7.5 = 420` with a standard deviation of about 34. (In
+truth the top nibble of each digest element is slightly biased toward
+0..7 — BabyBear's modulus is `15 x 2^27 + 1`, so bit 27 is 0 with
+probability 8/15 — which pulls the real centre down to about 418; see
+`derive_digits` in the source.) Setting `T = 455` puts the target about
+1.1 standard deviations above centre. Measured results:
 
-- **147 tries** on average for the signer to find matching randomness
+- **~150 tries** on average for the signer to find matching randomness
+  (it fluctuates run to run)
 - **385 chain steps** for the verifier, fixed for every message
 
 Compare that to plain WOTS, which needs about 510 steps *and* 67 chains
@@ -110,9 +114,11 @@ a Merkle tree, exactly like XMSS does with WOTS, to get a many-time scheme.
 - Private key: 32 bytes (a seed)
 - Public key: 32 bytes (8 field elements)
 - Signature: 8 bytes of randomness + 56 x 32 bytes ≈ 1.8 KB
-- Signing: ~147 hash calls to find randomness, then up to 56 x 15 chain steps
-- Verifying: exactly 385 Poseidon2 calls, plus a few for hashing
+- Signing: ~150 hash calls to find randomness, then up to 56 x 15 chain steps
+- Verifying: exactly 385 chain steps, plus ~60 more Poseidon2 permutations
+  of overhead (56 to compress the chain tops into the public key, and a
+  few to hash the message and derive the digits)
 
-The number that matters for ZK is that last one: **385 algebraic hash calls,
-fixed**. That combination — a small, predictable count of circuit-friendly
+The number that matters for ZK is the chain-step count: **385 algebraic
+hash calls, fixed**. That combination — a small, predictable count of circuit-friendly
 hashes — is what makes this design practical to verify inside a proof.

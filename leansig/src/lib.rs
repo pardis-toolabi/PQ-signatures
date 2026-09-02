@@ -24,12 +24,14 @@ pub const DIGITS: usize = 56;
 
 /// The digit sum every signed message must hit exactly.
 ///
-/// Digits are roughly uniform over 0..=15, so the sum over 56 of them
-/// centres on 420 with a standard deviation near 34. Picking a target
-/// above the centre makes verification cheaper (it walks
+/// Digits are close to uniform over 0..=15, so the sum over 56 of them
+/// would nominally centre on 420 with a standard deviation near 34. The
+/// top nibble of each digest element is slightly biased (see
+/// `derive_digits`), which pulls the true centre down to about 418.
+/// Picking a target above the centre makes verification cheaper (it walks
 /// `DIGITS * 15 - TARGET_SUM` steps in total) but makes the signer search
-/// longer to find matching randomness. This value sits about one standard
-/// deviation high, costing the signer a few hundred tries on average.
+/// longer to find matching randomness. This value sits about 1.1 standard
+/// deviations high, costing the signer ~150 tries on average.
 pub const TARGET_SUM: u32 = 455;
 
 /// Signer gives up after this many tries; reaching it means the parameters
@@ -48,10 +50,14 @@ fn chain(start: ChainValue, steps: u32) -> ChainValue {
 
 /// Derives the message digits for a given randomness value.
 ///
-/// Note the digits come from the low 28 bits of each field element. Field
-/// elements are values mod P (just under 2^31), so their low bits are
-/// close to uniform while the top bits are slightly biased — taking the
-/// low 28 avoids that bias.
+/// The digits come from the low 28 bits of each field element. Because
+/// P = 15 * 2^27 + 1, the low 24 bits of a uniform field element are
+/// essentially unbiased (P ≡ 1 mod 2^24), but the seventh nibble — bits
+/// 24..28 — is not: bit 27 is 0 with probability 8/15, so that nibble
+/// favours 0..=7 over 8..=15 at odds 8:7 and has mean ~7.23 instead of
+/// 7.5. With eight such nibbles among the 56 digits, the digit sum
+/// centres on ~418 rather than 420. Harmless here (the target-sum search
+/// absorbs it), but worth knowing the bias exists.
 fn derive_digits(message_hash: &[F], randomness: u64) -> [u8; DIGITS] {
     let mut input = message_hash.to_vec();
     input.push(F::from_u64(randomness & 0xFFFF_FFFF));

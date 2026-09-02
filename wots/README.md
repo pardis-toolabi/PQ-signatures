@@ -35,18 +35,20 @@ hash becomes 64 digits.
 
 **2. Add a checksum.**
 
-If someone could quietly turn a digit like `5` into a smaller digit like
-`2`, they'd only need to reveal *less* of a hash chain than the real
-signer did — which would let them alter the message and still pass
-verification. To stop this, we compute a checksum:
+Chains only walk forward, so anyone holding a signature value for digit
+`5` can hash it twice more and claim digit `7` — *raising* a digit is
+free. Without a fix, a forger could pass off any message whose digits are
+all ≥ the signed one's. To stop this, we compute a checksum that moves the
+opposite way:
 
 ```
 checksum = sum of (15 - digit) for all 64 message digits
 ```
 
-If any real digit is lowered, the checksum goes up, and the attacker would
-need to also raise the checksum digits — but raising a digit means walking
-a hash chain *backward*, which is exactly what's hard. The checksum needs 3
+Raising any message digit now *lowers* the checksum, so some checksum
+digit must be lowered to match — and lowering a digit means walking a
+hash chain *backward*, which is exactly what's hard. (The "Why raising a
+digit doesn't work" section below spells this out.) The checksum needs 3
 more base-16 digits to represent, so in total there are `64 + 3 = 67` digits.
 
 **3. Generate one hash chain per digit.**
@@ -112,5 +114,11 @@ attempt is stopped at the checksum.
 - Signing: up to 67 × 15 = 1,005 hash operations
 - Verifying: up to another 1,005 hash operations
 
-Roughly 4x smaller than Lamport for keys and signatures, at the cost of
-walking hash chains instead of a single hash per position.
+The signature is roughly 4x smaller than Lamport's (8 KB → 2.1 KB) and
+the keys about 7.6x smaller (16 KB → 2.1 KB), at the cost of walking hash
+chains instead of a single hash per position.
+
+One simplification to be aware of: the chains here iterate raw SHA-256.
+Real WOTS+ (RFC 8391) keys and addresses every hash call — a per-chain,
+per-step domain separator — to prevent values being reused across chains
+or key pairs. This teaching version omits that.

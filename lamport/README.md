@@ -78,7 +78,10 @@ with the same key — the key is consumed the moment you use it.
 - Private key: 512 × 32 bytes = 16 KB
 - Public key: 512 × 32 bytes = 16 KB
 - Signature: 256 × 32 bytes = 8 KB
-- Signing/verifying: 256 hash operations, very fast
+- Signing: 1 hash (the message digest) — the rest is just selecting
+  secrets, so it is nearly instant
+- Verifying: 257 hash operations (the message digest plus one per
+  revealed value), still very fast
 
 The signature is large compared to classical schemes like ECDSA (64 bytes),
 but the operations are just hashing, which is cheap and simple to trust.
