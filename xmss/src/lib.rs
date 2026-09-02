@@ -107,6 +107,12 @@ pub fn verify(public_key: &PublicKey, message: &[u8], signature: &Signature) -> 
     if signature.auth_path.len() as u32 != public_key.height {
         return false;
     }
+    // The Merkle walk below only consumes the low `height` bits of the
+    // index, so without this bound any index congruent mod 2^height would
+    // verify too — a malleable signature claiming a leaf it never used.
+    if u64::from(signature.index) >= 1u64 << public_key.height {
+        return false;
+    }
     let recovered_wots_key = wots::recover_public_key(message, &signature.wots_signature);
     let mut node = leaf_hash(&recovered_wots_key);
     let mut index = signature.index as usize;
@@ -168,6 +174,19 @@ mod tests {
         let pk = sk.public_key();
         let mut signature = sk.sign(b"message").unwrap();
         signature.index += 1;
+        assert!(!verify(&pk, b"message", &signature));
+    }
+
+    #[test]
+    fn out_of_range_leaf_index_fails() {
+        // An index congruent to the real leaf mod 2^height walks the same
+        // Merkle path; only the explicit bound check rejects it.
+        let mut sk = PrivateKey::generate(3);
+        let pk = sk.public_key();
+        let mut signature = sk.sign(b"message").unwrap();
+        signature.index += 8;
+        assert!(!verify(&pk, b"message", &signature));
+        signature.index += 8;
         assert!(!verify(&pk, b"message", &signature));
     }
 }

@@ -88,7 +88,8 @@ risk reusing one.
 ## Cost (height h, 2^h signatures available)
 
 - Public key: 32 bytes, regardless of `h`
-- Signature: 1 WOTS signature (≈2.1 KB) + `h` sibling hashes (`h × 32` bytes)
+- Signature: a 4-byte leaf index + 1 WOTS signature (≈2.1 KB) + `h`
+  sibling hashes (`h × 32` bytes)
 - Key generation: build `2^h` WOTS key pairs — this is the expensive part,
   and it happens once, up front
 - Signing/verifying: one WOTS sign/verify, plus `h` extra hashes for the
