@@ -32,8 +32,9 @@ supplies everything:
 2. **The hash / XOF** — the same permutation in sponge mode.
 3. **Merkle compression** — the same permutation again, in **Jive** mode.
 
-Jive is worth a note because it is not a sponge. It is Davies-Meyer with a
-feed-forward:
+Jive is worth a note because it is not a sponge. It is a plain
+feed-forward construction (Miyaguchi-style, not Davies-Meyer — nothing is
+keyed):
 
 ```
 P'(x) = P(x) + x
@@ -155,7 +156,12 @@ nothing but fresh randomness, and interpolate. Now each row is a
 polynomial of degree `l' + 10`, it still says what the witness said at
 `0..10`, and at any other point it says nothing at all — which is where
 the zero knowledge comes from, because the proof only ever opens points
-outside `0..10`.
+outside `0..10`. That guarantee is enforced by an offset on the committed
+evaluation points (`decs::EVALUATION_OFFSET`, `2^32`): an earlier version
+used an offset of 2, which put committed leaves *on* the witness points —
+about 1% of signatures opened a raw witness column, and Anemoi states
+invert layer by layer, so one leaked column is full key recovery. A
+regression test now pins the two domains apart.
 
 Both constraint families are then folded into one polynomial per
 combination:
@@ -222,7 +228,7 @@ amount of field arithmetic, not `m1 * s + m2` degree-7 constraints.
 
 ## Status
 
-Signs and verifies. 86 tests.
+Signs and verifies. 87 tests.
 
 | Module | What it does |
 |--------|--------------|
@@ -243,7 +249,7 @@ this machine, release build:
 |---|---|
 | Signature | 18,688 B |
 | Sign | 1.6 s |
-| Verify | 8.6 ms |
+| Verify | 8.7 ms |
 | Secret key | 32 B |
 | Public key | 64 B |
 
@@ -256,8 +262,13 @@ size and inside its timing range.
 Only `N = 2^14` comes from the paper (Table 2's "Short" trade-off).
 Everything else — `l' = 20`, `rho = 2`, `eta = 2`, arity 2 — was chosen
 here. `rho = 2` because each combination is worth one `1/p` chance to a
-cheating prover, and over a 64-bit field two is the fewest that reaches
-128 bits. Arity 2 because at `t = 8` only arity 2 gives Merkle nodes of
+cheating prover, and over a 64-bit field two is the fewest that pushes
+the *challenge* term to 128 bits. The opening term is weaker: by this
+crate's own heuristic it is `l' * log2(N / deg_q) ≈ 124` bits, and the
+spec's countermeasures for 64-bit fields (proof-of-work grinding and the
+HYBRID challenge type, which it calls mandatory there) are not
+implemented — so `level_128` is at most ~124 bits even by its own
+estimate. The name describes the target, not a proven level. Arity 2 because at `t = 8` only arity 2 gives Merkle nodes of
 `2*lambda` bits.
 
 The default test suite runs at `Parameters::testing()` (`l' = 6`,
@@ -305,8 +316,17 @@ compression; the sponge capacity.
   we absorb it first, and `R` after `Q` rather than before. What matters
   is the same in both: every prover message is bound before the opening
   indices are drawn.
+- **The spec's mandatory 64-bit-field countermeasures are absent.** For
+  fields this small the spec requires proof-of-work grinding on the
+  opening indices and its HYBRID challenge batching; neither is
+  implemented (see the note in `transcript.rs`), which is why `level_128`
+  tops out around 124 bits by this crate's own estimate.
 - **The soundness estimate is a heuristic, not a proof.** It is written
   out at the top of `piop.rs`. Nobody has done the real analysis.
+- **Sizes are element counts, not a wire format.** There is no byte
+  serializer; `size_bytes` multiplies field-element counts by 8. The
+  18,688 B figure is honest arithmetic, but a real encoding (indices,
+  length framing) has never been round-tripped.
 
 Consequence: **this will not interoperate with the CAPSS reference
 implementation**, and there are **no published test vectors for CAPSS**

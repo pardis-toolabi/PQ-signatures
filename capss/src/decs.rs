@@ -96,12 +96,26 @@ impl Parameters {
     }
 }
 
-/// The evaluation points. The spec writes `e_i = i + 1` for `i` in
-/// `1..=N`, so the zero-based leaf `j` sits at `j + 2`. The point of the
-/// offset is that neither 0 nor 1 is an evaluation point — the layers
-/// above DECS evaluate there.
+/// Offset separating the committed evaluation points from the domain the
+/// layers above interpolate over.
+///
+/// The PIOP interpolates its row polynomials through the witness columns
+/// at `0..s` and its ZK pads at `s..s+l'`. If a committed leaf sat at one
+/// of those points, opening it would hand the verifier a raw witness
+/// column — Anemoi states invert layer by layer, so one leaked column is
+/// full key recovery. This implementation once used an offset of 2, which
+/// left leaves 0..s+l'-2 exactly on those points and leaked a witness
+/// column in about 1% of signatures. `2^32` puts every leaf far outside
+/// any interpolation domain this crate will ever use (points stay well
+/// below the Goldilocks modulus, and distinctness is untouched).
+pub const EVALUATION_OFFSET: u64 = 1 << 32;
+
+/// The evaluation points: zero-based leaf `j` sits at `j + 2^32`. The
+/// spec writes `e_i = i + 1`; the much larger offset is what keeps the
+/// DECS domain disjoint from the PIOP's interpolation points — see
+/// `EVALUATION_OFFSET`.
 pub fn evaluation_point(leaf_index: usize) -> Fp {
-    Fp::new(leaf_index as u64 + 2)
+    Fp::new(leaf_index as u64 + EVALUATION_OFFSET)
 }
 
 /// What one opened leaf reveals.
@@ -335,11 +349,25 @@ pub fn verify(
     }
 
     let width = node_width(parameters.arity);
+    // Pin every path to the depth the committed tree actually has. Without
+    // this the prover chooses the depth: verification work becomes
+    // attacker-controlled, and the soundness argument's "exactly N
+    // committed points" premise is unenforced.
+    let expected_depth = {
+        let mut depth = 0usize;
+        let mut span = 1usize;
+        while span < parameters.leaf_count {
+            span *= parameters.arity;
+            depth += 1;
+        }
+        depth
+    };
     let mut points = Vec::with_capacity(opened);
     for (position, index) in indices.iter().enumerate() {
         let leaf = &opening.leaves[position];
         if leaf.polynomial_values.len() != parameters.polynomial_count
             || leaf.mask_values.len() != parameters.mask_count
+            || opening.paths[position].siblings.len() != expected_depth
         {
             return None;
         }
@@ -427,9 +455,9 @@ pub fn interpolate(points: &[Fp], values: &[Fp]) -> Option<Vec<Fp>> {
         for index in (0..count - 1).rev() {
             basis[index] = master[index + 1] + *point * basis[index + 1];
         }
-        let scale = (values[j] * evaluate(&basis, *point).inverse()?).value();
+        let scale = values[j] * evaluate(&basis, *point).inverse()?;
         for (slot, coefficient) in result.iter_mut().zip(&basis) {
-            *slot = *slot + Fp::new(scale) * *coefficient;
+            *slot = *slot + scale * *coefficient;
         }
     }
     Some(result)

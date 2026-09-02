@@ -58,7 +58,10 @@
 //!   index binds through the path position instead, as in loquat_verify.
 //! - Distinct-index redraws: the Rust transcript redraws on collision;
 //!   a circuit cannot loop on data, so a colliding draw simply makes the
-//!   interpolation denominators zero and the circuit unsatisfiable.
+//!   interpolation denominators zero and the circuit unsatisfiable. The
+//!   cost: an honest signature fails to prove whenever two of the 20
+//!   drawn indices collide, probability C(20,2)/2^14, about 1.2% --
+//!   acceptable for a shape measurement, not for production.
 //!
 //! # Modelling choices
 //!
@@ -92,6 +95,11 @@ use poseidon::poseidon2::Poseidon2;
 
 /// l': opened leaves, and the number of low Q_k coefficients rebuilt.
 global L_PRIME: u32 = 20;
+/// DECS evaluation offset: leaf `i` sits at point `i + 2^32`, keeping the
+/// committed domain disjoint from the PIOP interpolation points `0..s+l'`
+/// (the Rust crate's `decs::EVALUATION_OFFSET`; an opening at one of
+/// those points would reveal a raw witness column).
+global EVALUATION_OFFSET: Field = 4294967296;
 /// rho: independent combinations Q_k, each one sum-to-zero check.
 global RHO: u32 = 2;
 /// s: columns of the witness matrix; Omega = {0..S-1}.
@@ -193,8 +201,9 @@ fn squeeze<let N: u32>(state: [Field; 4]) -> ([Field; 4], [Field; N]) {
 
 /// The low TREE_BITS bits of a squeezed challenge are the opened leaf
 /// index: bits 0..DEPTH walk the path, bits DEPTH..TREE_BITS pick the
-/// cap entry, and the DECS evaluation point is index + 2 (the Rust
-/// crate's `evaluation_point`, keeping 0 and 1 out of the domain).
+/// cap entry, and the DECS evaluation point is index + EVALUATION_OFFSET
+/// (the Rust crate's `evaluation_point`, keeping the committed domain
+/// clear of the interpolation points).
 fn opening_position(challenge: Field) -> ([bool; TREE_BITS], Field) {
     let bits254: [bool; 254] = challenge.to_le_bits();
     let mut bits: [bool; TREE_BITS] = [false; TREE_BITS];
@@ -551,7 +560,7 @@ fn main(
     let mut q_values: [[Field; L_PRIME]; RHO] = [[0; L_PRIME]; RHO];
     for j in 0..L_PRIME {
         let (bits, index) = opening_position(opening_challenges[j]);
-        points[j] = index + 2;
+        points[j] = index + EVALUATION_OFFSET;
 
         let mut leaf_input: [Field; LEAF_WIDTH] = [0; LEAF_WIDTH];
         for r in 0..N_ROWS {
@@ -756,7 +765,7 @@ unconstrained fn build_instance(row_tamper: Field) -> Instance {
     //    layout puts leaf i at N_LEAVES + i, so the cap is nodes 16..32.
     let mut nodes: [Field; HEAP] = [0; HEAP];
     for idx in 0..N_LEAVES {
-        let point = (idx + 2) as Field;
+        let point = idx as Field + EVALUATION_OFFSET;
         let mut leaf_input: [Field; LEAF_WIDTH] = [0; LEAF_WIDTH];
         for r in 0..N_ROWS {
             leaf_input[r] = evaluate(row_polys[r], point);
@@ -829,7 +838,7 @@ unconstrained fn build_instance(row_tamper: Field) -> Instance {
     let mut siblings: [[Field; DEPTH]; L_PRIME] = [[0; DEPTH]; L_PRIME];
     for j in 0..L_PRIME {
         let (_, index) = opening_position(opening_challenges[j]);
-        let point = index + 2;
+        let point = index + EVALUATION_OFFSET;
         for r in 0..N_ROWS {
             leaf_rows[j][r] = evaluate(row_polys[r], point);
         }

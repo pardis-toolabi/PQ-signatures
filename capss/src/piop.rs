@@ -10,7 +10,10 @@
 //! interpolation points carrying pure randomness. Those `l'` spare
 //! degrees of freedom are the zero knowledge: the proof opens exactly
 //! `l'` points outside `Omega`, and at those points every `P_i` is
-//! uniformly random and independent of the witness.
+//! uniformly random and independent of the witness. That "outside
+//! `Omega`" is load-bearing and is enforced by `decs::EVALUATION_OFFSET`:
+//! the committed evaluation points start at `2^32`, far above every
+//! interpolation point, so no opening can land on a witness column.
 //!
 //! ```text
 //! input_degree = l' + s - 1
@@ -523,6 +526,9 @@ pub fn prove(
     committed.extend(masks.iter().cloned());
 
     let decs_parameters = parameters.decs();
+    // Derived, not independent: this is only safe because the pad XOF and
+    // the DECS mask XOF use different domain tags. A fresh random seed
+    // would be the cleaner choice in anything real.
     let mut mask_seed = seed;
     mask_seed[0] = mask_seed[0] + Fp::ONE;
     let commitment = decs::Commitment::new(decs_parameters, &committed, salt, mask_seed);
@@ -679,6 +685,22 @@ mod tests {
     fn check(parameters: &Parameters, public: &PublicKey, proof: &Proof) -> bool {
         let mut transcript = Transcript::new(b"piop-test");
         verify(parameters, public, proof, &mut transcript)
+    }
+
+    #[test]
+    fn decs_points_stay_outside_the_interpolation_domain() {
+        // The row polynomials carry the witness at points 0..s and the ZK
+        // pads at s..s+l'. A committed leaf landing on any of those points
+        // would open a raw witness column — an earlier offset of 2 did
+        // exactly that in ~1% of level_128 signatures. Every committed
+        // point must clear the whole interpolation domain, for both
+        // parameter sets.
+        for parameters in [Parameters::testing(), Parameters::level_128()] {
+            let points =
+                interpolation_points(dimensions().columns, parameters.opened_count);
+            let lowest_leaf_point = crate::decs::evaluation_point(0).value();
+            assert!(points.iter().all(|point| point.value() < lowest_leaf_point));
+        }
     }
 
     #[test]
