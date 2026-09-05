@@ -304,6 +304,10 @@ pub fn challenge_gammas(
 ) -> Vec<Fp> {
     transcript.absorb_field_slice(b"capss-decs-salt", salt);
     transcript.absorb_field_slice(b"capss-decs-root", root);
+    // A gamma of 0 would collapse R_k to its mask and 1 would defeat the
+    // powers batching; both arrive with probability 2/p ~ 2^-63 per draw,
+    // which the heuristic soundness estimate already absorbs, so they are
+    // not screened out here.
     transcript.challenge_field_vec(b"capss-decs-gamma", parameters.mask_count)
 }
 

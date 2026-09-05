@@ -532,6 +532,7 @@ pub fn prove(
     witness: &Matrix,
     salt: Digest,
     seed: Digest,
+    mask_seed: Digest,
     transcript: &mut Transcript,
 ) -> Proof {
     let dimensions = dimensions();
@@ -544,11 +545,9 @@ pub fn prove(
     committed.extend(masks.iter().cloned());
 
     let decs_parameters = parameters.decs();
-    // Derived, not independent: this is only safe because the pad XOF and
-    // the DECS mask XOF use different domain tags. A fresh random seed
-    // would be the cleaner choice in anything real.
-    let mut mask_seed = seed;
-    mask_seed[0] = mask_seed[0] + Fp::ONE;
+    // `mask_seed` hides the committed polynomials inside the DECS batches;
+    // it is drawn fresh by the caller, independent of the pad seed, so no
+    // single secret is a single point of failure.
     let commitment = decs::Commitment::new(decs_parameters, &committed, salt, mask_seed);
     let root = commitment.root();
 
@@ -700,7 +699,15 @@ mod tests {
 
     fn run(parameters: &Parameters, public: &PublicKey, witness: &Matrix, seed: u64) -> Proof {
         let mut transcript = Transcript::new(b"piop-test");
-        prove(parameters, public, witness, digest(seed), digest(seed + 1), &mut transcript)
+        prove(
+            parameters,
+            public,
+            witness,
+            digest(seed),
+            digest(seed + 1),
+            digest(seed + 2),
+            &mut transcript,
+        )
     }
 
     fn check(parameters: &Parameters, public: &PublicKey, proof: &Proof) -> bool {

@@ -110,12 +110,13 @@ fn sign_with_witness(
     let mut transcript = opening_transcript(public, message);
     // The salt separates two signatures over the same message so that
     // repeated signing does not reuse leaf hashes; the seed expands into
-    // the row pads and the PIOP masks, and is the only thing hiding the
-    // witness. Both have to be fresh, and the seed has to stay secret.
+    // the row pads and the PIOP masks, and the mask seed hides the DECS
+    // batches. All three have to be fresh, and the last two secret.
     let proof = piop::prove(
         parameters,
         public,
         witness,
+        random_digest(),
         random_digest(),
         random_digest(),
         &mut transcript,

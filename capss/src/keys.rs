@@ -65,7 +65,9 @@ pub const SECRET_KEY_BYTES: usize = SECRET_SIZE * 8;
 /// `iv` and `y` together, 8 field elements.
 pub const PUBLIC_KEY_BYTES: usize = (IV_SIZE + OUTPUT_SIZE) * 8;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// No Copy or Debug: Copy silently multiplies stack copies of the secret,
+// and a derived Debug would print it on any `{:?}`.
+#[derive(Clone, PartialEq, Eq)]
 pub struct SecretKey {
     pub x: [Fp; SECRET_SIZE],
 }
@@ -78,7 +80,7 @@ pub struct PublicKey {
 
 /// The paper's `sk` carries `pk` alongside `x`, so a signer never has to
 /// recompute the permutation just to know what it is proving about.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct KeyPair {
     pub public: PublicKey,
     pub secret: SecretKey,
@@ -158,7 +160,8 @@ mod tests {
         let mut seed = 1u64;
         for _ in 0..20 {
             let (iv, x) = fixed_parts(&mut seed);
-            assert_eq!(from_parts(&iv, &x), from_parts(&iv, &x));
+            // Plain assert: KeyPair deliberately has no Debug to print.
+            assert!(from_parts(&iv, &x) == from_parts(&iv, &x));
         }
     }
 
