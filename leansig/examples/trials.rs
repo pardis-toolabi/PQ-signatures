@@ -1,6 +1,7 @@
 //! Measures how many randomness values the signer tries before the message
 //! digits hit the target sum. This is the cost the target-sum trick pays in
-//! exchange for cheaper verification.
+//! exchange for cheaper verification — the signing-time vs verifier-hashing
+//! trade-off ePrint 2025/055 benchmarks in Section 8.2 (its delta = 1 vs 1.1).
 
 fn main() {
     let runs = 20u32;

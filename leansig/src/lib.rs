@@ -10,16 +10,32 @@
 //!    searches for randomness that makes the message digits add up to a
 //!    fixed total. This removes chains entirely and lets the total be
 //!    tuned so verification walks fewer chain steps.
+//!
+//! References:
+//! - Drake, Khovratovich, Kudinov, Wagner, "Hash-Based Multi-Signatures for
+//!   Post-Quantum Ethereum", ePrint 2025/055 — the design this crate
+//!   follows; the target-sum encoding is its Construction 6 (Section 5.2).
+//!   <https://eprint.iacr.org/2025/055>
+//! - Hülsing, Kudinov, Ronen, Yogev, "SPHINCS+C: Compressing SPHINCS+ With
+//!   (Almost) No Cost", IEEE S&P 2023, ePrint 2022/778 — where dropping the
+//!   checksum for a fixed-sum encoding comes from.
+//!   <https://eprint.iacr.org/2022/778>
+//! - Zhang, Cui, Yu, "Revisiting the Constant-Sum Winternitz One-Time
+//!   Signature", CRYPTO 2023, ePrint 2023/850 — analysis of the
+//!   constant-sum variant. <https://eprint.iacr.org/2023/850>
 
 use poseidon2::F;
 use rand::RngCore;
 
-/// Winternitz parameter: digits are base 16.
+/// Winternitz parameter: digits are base 16, i.e. chunk size w = 4 bits —
+/// one of the two chunk sizes ePrint 2025/055 finds best (Section 8.2:
+/// "the values w = 2 and w = 4 offer the best balance").
 pub const W: u32 = 16;
 const CHAIN_STEPS: u32 = W - 1;
 
 /// Number of hash chains (one per message digit). No checksum chains are
-/// needed, unlike plain WOTS.
+/// needed, unlike plain WOTS. The paper calls this the code length `v`
+/// (ePrint 2025/055, Construction 6).
 pub const DIGITS: usize = 56;
 
 /// The digit sum every signed message must hit exactly.
@@ -32,6 +48,10 @@ pub const DIGITS: usize = 56;
 /// `DIGITS * 15 - TARGET_SUM` steps in total) but makes the signer search
 /// longer to find matching randomness. This value sits about 1.1 standard
 /// deviations high, costing the signer ~150 tries on average.
+///
+/// ePrint 2025/055 sets the target as `T = ceil(delta * E)` where
+/// `E = v(2^w - 1)/2` is the expected sum, and benchmarks `delta` up to 1.1
+/// (Sections 8.1-8.2). Here E = 420 and 455 corresponds to delta ≈ 1.08.
 pub const TARGET_SUM: u32 = 455;
 
 /// Signer gives up after this many tries; reaching it means the parameters
@@ -40,6 +60,11 @@ const MAX_ATTEMPTS: u64 = 1 << 22;
 
 type ChainValue = [F; poseidon2::OUT];
 
+/// Hash-chain walk, Construction 2 of ePrint 2025/055 (which additionally
+/// tweaks every step with its epoch, chain, and position; this educational
+/// version does not). Walking s steps and then the remaining ones equals
+/// walking all of them at once — the paper's Lemma 2 — which is what lets
+/// the verifier finish a chain the signer started.
 fn chain(start: ChainValue, steps: u32) -> ChainValue {
     let mut value = start;
     for _ in 0..steps {
@@ -49,6 +74,11 @@ fn chain(start: ChainValue, steps: u32) -> ChainValue {
 }
 
 /// Derives the message digits for a given randomness value.
+///
+/// This is step 1 of Construction 6 in ePrint 2025/055 (Section 5.2):
+/// hash `(message, rho)` into `v` chunks of `w` bits each; the signer
+/// retries with fresh randomness until the chunks land in the code (here,
+/// until they sum to `TARGET_SUM`).
 ///
 /// The digits come from the low 28 bits of each field element. Because
 /// P = 15 * 2^27 + 1, the low 24 bits of a uniform field element are
@@ -131,6 +161,9 @@ impl PrivateKey {
     pub fn sign_counting(self, message: &[u8]) -> Option<(Signature, u64)> {
         let message_hash = poseidon2::hash_bytes(message);
 
+        // The target-sum search: "regenerate x using a counter ... until it
+        // satisfies this constraint" (ePrint 2025/055, Section 5.2). The
+        // expected number of tries is 1 / Pr[sum == TARGET_SUM].
         for attempt in 0..MAX_ATTEMPTS {
             let digits = derive_digits(&message_hash, attempt);
             if digit_sum(&digits) != TARGET_SUM {
@@ -161,10 +194,14 @@ pub fn verify(public_key: &PublicKey, message: &[u8], signature: &Signature) -> 
     // The target-sum check is what replaces WOTS's checksum. An attacker can
     // only walk chains forward, so any forged message would need digits no
     // smaller than these — which would push the sum above the target.
+    // This is the "incomparable encoding" property of ePrint 2025/055
+    // (Definition 13), proved for the target-sum code in its Lemma 7.
     if digit_sum(&digits) != TARGET_SUM {
         return false;
     }
 
+    // Finish each chain: digit steps (signer) + (15 - digit) steps (here)
+    // reproduce the chain top, by Lemma 2 of ePrint 2025/055.
     let tops: Vec<ChainValue> = signature
         .chains
         .iter()
