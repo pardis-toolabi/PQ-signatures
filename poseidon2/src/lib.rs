@@ -286,7 +286,10 @@ pub fn hash(input: &[F]) -> [F; OUT] {
     let mut state = [F::ZERO; WIDTH];
     // Length goes in the capacity as domain separation, so that inputs of
     // different lengths cannot collide by padding alone. (The same role the
-    // SAFE-style IV plays in ePrint 2023/323 Section 3.1.)
+    // SAFE-style IV plays in ePrint 2023/323 Section 3.1.) The tag reduces
+    // mod P, so lengths P elements apart would collide — reject them
+    // outright; nothing in this workspace comes near that size.
+    assert!(input.len() < P as usize, "input too long for the length tag");
     state[WIDTH - 1] = F::from_u64(input.len() as u64);
 
     if input.is_empty() {
@@ -308,6 +311,8 @@ pub fn hash(input: &[F]) -> [F; OUT] {
 /// Packs bytes into field elements (three bytes each, since 2^24 < P) and
 /// hashes them.
 pub fn hash_bytes(bytes: &[u8]) -> [F; OUT] {
+    // Same length-tag reduction concern as in `hash`.
+    assert!(bytes.len() < P as usize, "input too long for the length tag");
     let mut elements = Vec::with_capacity(bytes.len() / 3 + 2);
     elements.push(F::from_u64(bytes.len() as u64));
     for chunk in bytes.chunks(3) {
