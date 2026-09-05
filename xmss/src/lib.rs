@@ -1,3 +1,18 @@
+//! XMSS: many one-time WOTS keys under a single Merkle-tree public key.
+//!
+//! References:
+//! - J. Buchmann, E. Dahmen, A. Hülsing, "XMSS – A Practical Forward Secure
+//!   Signature Scheme Based on Minimal Security Assumptions", PQCrypto 2011.
+//!   https://eprint.iacr.org/2011/484
+//! - RFC 8391 (XMSS), §4. https://www.rfc-editor.org/rfc/rfc8391.html
+//! - R. Merkle, "A Certified Digital Signature", CRYPTO '89. §6 ("Tree
+//!   Authentication") is the original Merkle tree and authentication path.
+//!   https://www.ralphmerkle.com/papers/Certified1979.pdf
+//!
+//! Simplified for teaching: hashes are raw SHA-256 with one-byte leaf/node
+//! domain-separation prefixes, where RFC 8391 uses keyed, bitmasked hashing
+//! throughout, and the whole tree is kept in memory rather than recomputed.
+
 use sha2::{Digest, Sha256};
 
 pub const HASH_LEN: usize = 32;
@@ -23,6 +38,8 @@ fn node_hash(left: [u8; HASH_LEN], right: [u8; HASH_LEN]) -> [u8; HASH_LEN] {
     out
 }
 
+// Merkle '89 §6 / RFC 8391 §4.1.6 (treeHash): hash sibling pairs upward
+// until a single root remains, which becomes the entire public key.
 fn build_tree(leaves: Vec<[u8; HASH_LEN]>) -> Vec<Vec<[u8; HASH_LEN]>> {
     let mut levels = vec![leaves];
     while levels.last().unwrap().len() > 1 {
@@ -80,6 +97,9 @@ impl PrivateKey {
     /// Signs with the next unused one-time key and advances the internal
     /// index. Returns `None` once every leaf has been used — the tree is
     /// exhausted and a fresh key pair is needed.
+    ///
+    /// RFC 8391 §4.1.9: XMSS signing is stateful — the index update is part
+    /// of the private key, not an implementation convenience.
     pub fn sign(&mut self, message: &[u8]) -> Option<Signature> {
         if self.next_index >= self.wots_keys.len() {
             return None;
@@ -93,6 +113,9 @@ impl PrivateKey {
         Some(Signature { index: index as u32, wots_signature, auth_path })
     }
 
+    // Merkle '89 §6's authentication path (RFC 8391 §4.1.8): the sibling at
+    // each level (index ^ 1) is exactly what a verifier needs to rebuild the
+    // root from one leaf.
     fn auth_path(&self, mut index: usize) -> Vec<[u8; HASH_LEN]> {
         let mut path = Vec::with_capacity(self.height as usize);
         for level in &self.tree[..self.height as usize] {
@@ -103,6 +126,8 @@ impl PrivateKey {
     }
 }
 
+// RFC 8391 §4.1.10: recover the WOTS public key from the signature, hash it
+// to a leaf, then fold in the auth-path siblings; valid iff the root matches.
 pub fn verify(public_key: &PublicKey, message: &[u8], signature: &Signature) -> bool {
     if signature.auth_path.len() as u32 != public_key.height {
         return false;

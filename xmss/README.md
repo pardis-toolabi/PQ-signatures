@@ -1,5 +1,11 @@
 # XMSS (eXtended Merkle Signature Scheme)
 
+A signature key you can only use once is like a pen that writes one word. To
+be useful in the real world — signing software updates, certificates, or
+messages for years — one public key must cover many signatures, while still
+relying on nothing more than a hash function for security. That is the
+problem XMSS solves.
+
 WOTS gives us small, one-time signatures. But "one-time" is a real problem —
 most real-world uses need to sign more than once with the same public key.
 XMSS solves this by combining *many* WOTS key pairs under a single public
@@ -74,6 +80,40 @@ If the final `node` matches the public root, the signature is valid — this
 proves both that the WOTS signature is genuine *and* that it belongs to leaf
 `i` of the tree that the public key committed to.
 
+## A tiny worked example (4 leaves, h = 2)
+
+Four WOTS key pairs give four leaves. The tree looks like this:
+
+```
+              root = H(n01 || n23)
+             /                    \
+   n01 = H(L0 || L1)      n23 = H(L2 || L3)
+       /       \               /       \
+     L0        L1            L2        L3
+```
+
+Say we sign with leaf **2**. The authentication path is the *sibling* at
+each level on the way up — marked `*` below:
+
+```
+              root
+             /    \
+         (n01)*    n23        <- level 1: sibling of n23 is n01
+          /  \    /   \
+        L0   L1 [L2] (L3)*    <- level 0: sibling of L2 is L3
+```
+
+So the path is `[L3, n01]` — one entry per level, `h = 2` entries total.
+The verifier rebuilds `L2` from the WOTS signature, then walks up:
+
+- index 2 is even, so `L2` is a *left* child: `node = H(L2 || L3) = n23`
+- index becomes `2 / 2 = 1`, which is odd, so `n23` is a *right* child:
+  `node = H(n01 || n23) = root`
+
+The result matches the published root, so leaf 2 really is part of the tree.
+Notice the verifier never saw `L0`, `L1`, or any other WOTS public key —
+two hashes and the path were enough.
+
 ## Why the index matters (statefulness)
 
 Each leaf is still a one-time WOTS key underneath. If the same leaf index is
@@ -97,3 +137,36 @@ risk reusing one.
 
 This is the key improvement over plain WOTS: a tiny, fixed-size public key,
 and the ability to sign many messages instead of just one.
+
+## Where this lives in the code
+
+| Concept | Code |
+| --- | --- |
+| WOTS public key → leaf | `leaf_hash` in [`src/lib.rs`](src/lib.rs) |
+| Hashing two children into a parent | `node_hash` in [`src/lib.rs`](src/lib.rs) |
+| Building the Merkle tree, level by level | `build_tree` in [`src/lib.rs`](src/lib.rs) |
+| Generating `2^h` WOTS key pairs + tree | `PrivateKey::generate` in [`src/lib.rs`](src/lib.rs) |
+| The root as the whole public key | `PrivateKey::public_key` in [`src/lib.rs`](src/lib.rs) |
+| Stateful signing — next unused leaf | `PrivateKey::sign` in [`src/lib.rs`](src/lib.rs) |
+| Collecting the sibling per level | `auth_path` in [`src/lib.rs`](src/lib.rs) |
+| Rebuilding the leaf and walking to the root | `verify` in [`src/lib.rs`](src/lib.rs) |
+
+## References
+
+- R. Merkle, ["A Certified Digital
+  Signature"](https://www.ralphmerkle.com/papers/Certified1979.pdf), CRYPTO
+  '89 (written 1979). §6 ("Tree Authentication") invents the Merkle tree and
+  the authentication path: publish one root, prove any leaf with `h`
+  siblings.
+- J. Buchmann, E. Dahmen, A. Hülsing, ["XMSS – A Practical Forward Secure
+  Signature Scheme Based on Minimal Security
+  Assumptions"](https://eprint.iacr.org/2011/484), PQCrypto 2011 (ePrint
+  2011/484). The XMSS design itself: Merkle's tree combined with Winternitz
+  one-time keys, with security proved from minimal assumptions about the
+  hash function.
+- [RFC 8391](https://www.rfc-editor.org/rfc/rfc8391.html), "XMSS: eXtended
+  Merkle Signature Scheme", §4. The standardized version this crate
+  simplifies: §4.1.6 the tree hash, §4.1.8 the signature format with its
+  authentication path, §4.1.9 stateful signature generation, §4.1.10
+  verification. (The real thing also keys and masks every hash and never
+  stores the whole tree.)
