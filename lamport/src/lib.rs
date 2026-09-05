@@ -1,3 +1,16 @@
+//! Lamport one-time signatures.
+//!
+//! References:
+//! - L. Lamport, "Constructing Digital Signatures from a One Way Function",
+//!   SRI International CSL-98, 1979. §2 ("The Algorithm") is the original
+//!   construction: publish one-way images of secret keys, reveal the subset
+//!   picked by the message.
+//!   https://www.microsoft.com/en-us/research/publication/constructing-digital-signatures-one-way-function/
+//! - R. Merkle, "A Certified Digital Signature", CRYPTO '89. §3 ("The
+//!   Lamport-Diffie One Time Signature") writes down the exact per-bit,
+//!   two-secrets form implemented here.
+//!   https://www.ralphmerkle.com/papers/Certified1979.pdf
+
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
@@ -43,12 +56,16 @@ pub struct Signature {
 }
 
 impl PrivateKey {
+    // Merkle '89 §3: two independent secrets per message bit, so a signature
+    // reveals exactly one of each pair and the other 256 stay hidden.
     pub fn generate() -> Self {
         let zero = (0..MESSAGE_BITS).map(|_| random_block()).collect();
         let one = (0..MESSAGE_BITS).map(|_| random_block()).collect();
         PrivateKey { zero, one }
     }
 
+    // CSL-98 §2: the public key is F(k) for every secret k; one-wayness of F
+    // is the only assumption the whole scheme rests on.
     pub fn public_key(&self) -> PublicKey {
         PublicKey {
             zero: self.zero.iter().map(|block| hash(block)).collect(),
@@ -70,6 +87,8 @@ impl PrivateKey {
     }
 }
 
+// CSL-98 §2's validation test, per-bit: each revealed value must hash to the
+// public entry selected by that bit of the digest.
 pub fn verify(public_key: &PublicKey, message: &[u8], signature: &Signature) -> bool {
     if signature.values.len() != MESSAGE_BITS {
         return false;

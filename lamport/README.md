@@ -1,5 +1,15 @@
 # Lamport Signatures
 
+A digital signature solves a simple everyday problem: how do you prove that a
+message really came from you, and was not changed on the way, without meeting
+in person? You publish something (a public key), keep something secret (a
+private key), and attach a proof (a signature) to each message that anyone
+can check against the public key — but that nobody could have produced
+without the secret. Leslie Lamport showed in 1979 how to build such a proof
+out of nothing but a one-way function — a function that is easy to compute
+forward and practically impossible to run backward. An ordinary hash function
+like SHA-256 fits.
+
 Lamport signatures are the simplest post-quantum signature scheme. They only
 need a hash function to be secure — no elliptic curves, no number theory. That
 is exactly why they resist quantum computers: a good hash function is not
@@ -60,6 +70,31 @@ H(signature[i]) == (bit i == 0 ? public_zero[i] : public_one[i])
 
 If every one of the 256 checks passes, the signature is valid.
 
+## A tiny worked example (2 bits, by hand)
+
+Pretend message digests were only 2 bits long, and pretend our "hash
+function" turns lowercase into uppercase (a real one is irreversible, of
+course). Pick four random secrets, two per bit position:
+
+```
+                bit 0     bit 1
+secret_zero:    "ax"      "bq"
+secret_one:     "cv"      "dk"
+
+public_zero:    "AX"      "BQ"      (each secret, hashed)
+public_one:     "CV"      "DK"
+```
+
+Now sign a message whose digest is `10`:
+
+- bit 0 is `1` → reveal `secret_one[0]` = `"cv"`
+- bit 1 is `0` → reveal `secret_zero[1]` = `"bq"`
+
+The signature is `("cv", "bq")`. The verifier hashes each revealed value and
+compares: `H("cv") = "CV"` matches `public_one[0]`, and `H("bq") = "BQ"`
+matches `public_zero[1]`. Valid. Note that `"ax"` and `"dk"` were never
+revealed — and without them, nobody can sign `01`, `00`, or `11`.
+
 ## Why it's only good for one signature
 
 Each secret pair `(secret_zero[i], secret_one[i])` only hides one bit's
@@ -85,3 +120,28 @@ with the same key — the key is consumed the moment you use it.
 
 The signature is large compared to classical schemes like ECDSA (64 bytes),
 but the operations are just hashing, which is cheap and simple to trust.
+
+## Where this lives in the code
+
+| Concept | Code |
+| --- | --- |
+| Two random secrets per bit (private key) | `PrivateKey::generate` in [`src/lib.rs`](src/lib.rs) |
+| Hashing every secret (public key) | `PrivateKey::public_key` in [`src/lib.rs`](src/lib.rs) |
+| Splitting the message digest into 256 bits | `message_bits` in [`src/lib.rs`](src/lib.rs) |
+| Signing — reveal one secret per bit | `PrivateKey::sign` in [`src/lib.rs`](src/lib.rs) |
+| Verifying — hash each revealed value, compare | `verify` in [`src/lib.rs`](src/lib.rs) |
+| One key, one signature (enforced by ownership) | `sign(self, ...)` takes the key by value in [`src/lib.rs`](src/lib.rs) |
+
+## References
+
+- L. Lamport, ["Constructing Digital Signatures from a One Way
+  Function"](https://www.microsoft.com/en-us/research/publication/constructing-digital-signatures-one-way-function/),
+  SRI International technical report CSL-98, October 1979
+  ([PDF](https://lamport.azurewebsites.net/pubs/dig-sig.pdf)). The origin of
+  the scheme: §2 ("The Algorithm") shows how to sign by revealing a
+  message-selected subset of one-way-function preimages, and why a key must
+  only be used once.
+- R. Merkle, ["A Certified Digital
+  Signature"](https://www.ralphmerkle.com/papers/Certified1979.pdf), CRYPTO
+  '89 (written 1979). §3 ("The Lamport-Diffie One Time Signature") writes
+  down the exact two-secrets-per-bit form implemented in this crate.
