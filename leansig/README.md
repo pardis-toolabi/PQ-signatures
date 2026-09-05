@@ -55,7 +55,10 @@ signer searches r = 0, 1, 2, ... until sum(digits) == T
 ```
 
 The signature includes `r`. The verifier recomputes the digits and checks
-the sum is exactly `T` before doing anything else.
+the sum is exactly `T` before doing anything else. (It also rejects any
+`r` whose 32-bit halves are not already reduced mod P — the encoding
+into field elements is otherwise not injective, and `r + P` would yield
+a second valid signature for the same message.)
 
 Now raising a digit is useless: it pushes the sum above `T`, and the check
 fails. Lowering a digit would keep the sum wrong too, *and* would require

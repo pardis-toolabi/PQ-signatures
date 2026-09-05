@@ -188,6 +188,16 @@ pub fn verify(public_key: &PublicKey, message: &[u8], signature: &Signature) -> 
     if signature.chains.len() != DIGITS {
         return false;
     }
+    // `derive_digits` reduces each 32-bit half of the randomness mod P, so
+    // without this check the encoding is not injective: adding P to a half
+    // (e.g. `randomness + P` for a small counter) yields the same digits
+    // and a second valid signature — a malleability break. The honest
+    // signer's counter never leaves canonical form, so reject the rest.
+    if (signature.randomness & 0xFFFF_FFFF) >= u64::from(poseidon2::P)
+        || (signature.randomness >> 32) >= u64::from(poseidon2::P)
+    {
+        return false;
+    }
     let message_hash = poseidon2::hash_bytes(message);
     let digits = derive_digits(&message_hash, signature.randomness);
 
@@ -267,6 +277,20 @@ mod tests {
         let message = b"original message";
         let mut signature = sk.sign(message).unwrap();
         signature.randomness = signature.randomness.wrapping_add(1);
+        assert!(!verify(&pk, message, &signature));
+    }
+
+    #[test]
+    fn non_canonical_randomness_is_rejected() {
+        // `randomness + P` encodes to the same field elements, so before
+        // the canonical-form check this produced a second valid signature
+        // for the same message — a malleability break.
+        let sk = PrivateKey::generate();
+        let pk = sk.public_key();
+        let message = b"original message";
+        let mut signature = sk.sign(message).unwrap();
+        assert!(verify(&pk, message, &signature));
+        signature.randomness += u64::from(poseidon2::P);
         assert!(!verify(&pk, message, &signature));
     }
 
