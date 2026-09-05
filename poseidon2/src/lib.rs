@@ -6,6 +6,17 @@
 //! additions, multiplications, and the S-box `x^7`, so a circuit can
 //! express it directly. That makes it the hash of choice for the
 //! ZK-friendly signature schemes in this workspace.
+//!
+//! References:
+//! - Grassi, Khovratovich, Schofnegger, "Poseidon2: A Faster Version of the
+//!   Poseidon Hash Function", ePrint 2023/323 — the permutation implemented
+//!   here: external/internal rounds and spec in Section 6, the external
+//!   matrix in Section 5.1, the internal matrix in Section 5.2, sponge and
+//!   compression modes in Section 3.1. <https://eprint.iacr.org/2023/323>
+//! - Grassi, Khovratovich, Rechberger, Roy, Schofnegger, "Poseidon: A New
+//!   Hash Function for Zero-Knowledge Proof Systems", USENIX Security '21,
+//!   ePrint 2019/458 — the original design Poseidon2 speeds up.
+//!   <https://eprint.iacr.org/2019/458>
 
 use std::ops::{Add, Mul, Sub};
 
@@ -19,6 +30,11 @@ pub const RATE: usize = 8;
 /// How many elements a hash returns.
 pub const OUT: usize = 8;
 
+// Round counts for a 31-bit field at width 16 with the x^7 S-box: 8 full
+// rounds and 13 partial, the BabyBear instance produced by the procedure of
+// ePrint 2023/323 Section 6 and used by production libraries (e.g. Plonky3).
+// The paper's own Table 1 lists (n=31, t=16) with d=5 and 14 partial rounds;
+// BabyBear cannot use d=5 (5 divides P-1), hence d=7 and 13.
 const FULL_ROUNDS: usize = 8;
 const PARTIAL_ROUNDS: usize = 13;
 
@@ -56,7 +72,9 @@ impl F {
 
     /// The Poseidon2 S-box. `x^7` is used for BabyBear because 7 is the
     /// smallest exponent coprime to `P - 1`, which makes the map a
-    /// bijection on the field.
+    /// bijection on the field. (This is the paper's rule for choosing the
+    /// degree d: the smallest d >= 3 with gcd(d, p - 1) = 1 — ePrint
+    /// 2023/323, Section 6.)
     fn sbox(self) -> F {
         let x2 = self * self;
         let x3 = x2 * self;
@@ -91,7 +109,10 @@ impl Mul for F {
 
 /// Deterministic round constants.
 ///
-/// The reference Poseidon2 specification derives these with a Grain LFSR.
+/// The reference Poseidon2 specification derives these with a Grain LFSR
+/// (ePrint 2023/323 Section 6 generates them "as in Poseidon", i.e. per
+/// ePrint 2019/458). Note the internal rounds take a single constant each —
+/// one of Poseidon2's three changes (2023/323, Remark 4).
 /// This implementation uses a simpler documented generator instead: the
 /// constants only need to be fixed, public, and unstructured, which this
 /// achieves, but it does mean these are NOT the standard reference
@@ -139,6 +160,11 @@ fn build_round_constants() -> ([[F; WIDTH]; FULL_ROUNDS], [F; PARTIAL_ROUNDS]) {
 /// instead of `WIDTH^2`. This is the main reason Poseidon2 is cheaper
 /// than Poseidon, both natively and in a circuit.
 ///
+/// The shape, and the advice to pick small or power-of-two diagonal
+/// entries, is Section 5.2 of ePrint 2023/323 (in its notation
+/// `mu_i = diagonal[i] + 1`); the subspace-trail check a real diagonal
+/// must pass is its Section 5.3.
+///
 /// Like the round constants above, this diagonal is invented, not the
 /// vetted reference BabyBear-16 diagonal, and no invariant-subspace
 /// check has been run on it — another reason this permutation will not
@@ -148,6 +174,10 @@ const INTERNAL_DIAGONAL: [u32; WIDTH] = [
 ];
 
 /// Applies the 4x4 MDS matrix used by the Poseidon2 external layer.
+///
+/// This is the matrix M4 = [[5,7,1,3],[4,6,1,1],[1,3,5,7],[1,1,4,6]] of
+/// ePrint 2023/323 Section 5.1, computed with its addition schedule
+/// (8 additions, no general multiplications).
 fn apply_m4(chunk: &mut [F]) {
     let t0 = chunk[0] + chunk[1];
     let t1 = chunk[2] + chunk[3];
@@ -163,6 +193,9 @@ fn apply_m4(chunk: &mut [F]) {
 
 /// External linear layer: apply M4 to each group of four, then mix the
 /// groups together so every element influences every other.
+///
+/// Together the two steps compute `M_E = circ(2*M4, M4, ..., M4)`, the
+/// external matrix ePrint 2023/323 Section 5.1 prescribes for widths >= 8.
 fn external_layer(state: &mut [F; WIDTH]) {
     for chunk in state.chunks_mut(4) {
         apply_m4(chunk);
@@ -177,6 +210,9 @@ fn external_layer(state: &mut [F; WIDTH]) {
 }
 
 /// Internal linear layer: `state[i] = sum(state) + diagonal[i] * state[i]`.
+///
+/// The `y_i = (mu_i - 1) x_i + sum` evaluation of M_I from ePrint 2023/323
+/// Section 5.2: t - 1 additions for the sum, then one multiply-add each.
 fn internal_layer(state: &mut [F; WIDTH]) {
     let mut sum = F::ZERO;
     for value in state.iter() {
@@ -194,6 +230,11 @@ fn internal_layer(state: &mut [F; WIDTH]) {
 /// element (strong mixing, expensive); partial rounds apply it to only
 /// the first element (cheap, and enough to keep the algebraic degree
 /// climbing). This split is what keeps the total multiplication count low.
+///
+/// The sequence — an initial external layer (the `M_E * x` Poseidon2 adds
+/// in front, its first change over Poseidon), then RF/2 external rounds,
+/// RP internal rounds, RF/2 external rounds — follows ePrint 2023/323,
+/// Section 6 and Fig. 1.
 pub fn permute(state: &mut [F; WIDTH]) {
     let (full_constants, partial_constants) = round_constants();
 
@@ -224,6 +265,9 @@ pub fn permute(state: &mut [F; WIDTH]) {
 ///
 /// Hash chains in leanSig call this over and over, so it avoids the
 /// padding work a variable-length sponge would repeat every step.
+/// Compression mode is ePrint 2023/323 Section 3.1, though the paper's
+/// version adds a feed-forward (`Tr(P(x) + x)`) that this truncation-only
+/// educational version omits.
 pub fn compress(input: [F; OUT]) -> [F; OUT] {
     let mut state = [F::ZERO; WIDTH];
     state[..OUT].copy_from_slice(&input);
@@ -234,10 +278,15 @@ pub fn compress(input: [F; OUT]) -> [F; OUT] {
 }
 
 /// Variable-length sponge hash over field elements.
+///
+/// Sponge mode per ePrint 2023/323 Section 3.1: absorb `RATE` elements per
+/// permutation, keep `WIDTH - RATE` as capacity; security scales with the
+/// capacity, roughly `p^(capacity/2)` permutation calls to find a collision.
 pub fn hash(input: &[F]) -> [F; OUT] {
     let mut state = [F::ZERO; WIDTH];
     // Length goes in the capacity as domain separation, so that inputs of
-    // different lengths cannot collide by padding alone.
+    // different lengths cannot collide by padding alone. (The same role the
+    // SAFE-style IV plays in ePrint 2023/323 Section 3.1.)
     state[WIDTH - 1] = F::from_u64(input.len() as u64);
 
     if input.is_empty() {
