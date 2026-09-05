@@ -841,7 +841,11 @@ Read the code in this order — each crate builds on the last:
    `sig.rs`
 7. `capss/` — read `keys.rs`, then `pacs.rs`, then `piop.rs`
 
-Each has a README explaining its own maths at more depth than here.
+Each has a README explaining its own maths at more depth than here, a
+"Where this lives in the code" map, and a References section linking the
+actual papers — and each source file cites the paper section it
+implements, so you can read the code and the paper side by side. The
+root README's "The papers" table collects all of them in one place.
 
 Every crate's tests are worth reading as documentation — especially the
 **negative** ones. `tampering_with_the_h_path_is_caught` and

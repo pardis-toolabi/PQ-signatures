@@ -28,6 +28,27 @@ Each builds on the last, so reading them in order works well.
 | [`poseidon2`](poseidon2/) | The circuit-friendly hash leanSig and the circuits depend on. |
 | [`circuits`](circuits/) | Noir verification circuits and their measured gate counts. |
 
+## Finding your way around
+
+Pick the path that matches why you are here:
+
+- **"I want to learn how these schemes work."** Read
+  [`LEARN.md`](LEARN.md) top to bottom, then the crates in the table's
+  order — each crate's README re-explains its own maths in more depth,
+  with small worked examples, and each source file cites the paper
+  section it implements.
+- **"I need to pick a scheme."** Jump to the two tables below, then to
+  [Which one should I pick?](#which-one-should-i-pick) for what they mean
+  in practice.
+- **"I want to check the claims."** Every number comes from a command:
+  `cargo test --workspace`, `cargo run --release -p compare`, and
+  `bb gates` per circuit ([`circuits/README.md`](circuits/README.md) has
+  the exact steps). The papers each crate implements are linked in its
+  README's References section.
+- **"What is left out / how honest is this?"** The [Status](#status)
+  section, each README's caveats, and [`HANDOFF.md`](HANDOFF.md)'s
+  production-readiness list.
+
 ## Running it
 
 ```
@@ -164,6 +185,32 @@ paid once at signing so that verification stays cheap**, which is the
 right trade when a signature is verified far more often than it is made —
 and even more so when verification happens inside a proof.
 
+## Which one should I pick?
+
+Based purely on what is measured above — read this as a map, not as
+deployment advice (see the note at the bottom):
+
+- **Signatures checked inside a ZK proof, one-time keys are fine** →
+  the fixed-shape hash schemes win: **Lamport** if signature size does
+  not matter (cheapest circuit here at 33,756 gates), **leanSig** if it
+  does (1.8 KB, 72,304 gates, and it is the design Ethereum is building).
+- **Signatures checked inside a proof, many messages per key** →
+  **XMSS**: the Merkle tree adds ~2% circuit cost over WOTS and turns
+  one signature into 1024. The cost is state — the signer must remember
+  which leaf it used.
+- **No state, unlimited messages** → the proof-based pair. **Loquat**
+  signs fast (18 ms) with a big signature (62.3 KB); **CAPSS** signs
+  slowly (1.63 s) with a smaller signature (18.3 KB) and a 64-byte key.
+  Pick by which side of that trade you verify more often.
+- **Fast verification on a normal CPU, no ZK anywhere** → none of
+  these; that is what the NIST lattice standards (ML-DSA/Falcon) are
+  for. `LEARN.md` Part 12 explains why they are absent here and what
+  this repo's selection is biased toward.
+
+**None of this code is deployable** — it exists to make the schemes and
+their real measured trade-offs legible. Use it to *choose a direction*,
+then reach for an audited implementation of the standardized version.
+
 ## Status
 
 **Implemented, tested, and measured:** Lamport, WOTS, XMSS, leanSig,
@@ -219,6 +266,27 @@ polynomials (not load-bearing in this composition, see
 `capss/src/piop.rs`), the salt, and index binding inside the leaf hash.
 Its 97,199 gates and the paper's ~24K R1CS are **not** the same
 measurement either — different hash, field, and parameter set.
+
+## The papers
+
+Every crate implements a published design, and every source file cites
+the paper section it implements. The full citations (with what each one
+contributes) live in each crate README's References section; this is the
+map:
+
+| Scheme | Primary paper | Builds on |
+|--------|---------------|-----------|
+| Lamport | [Lamport, SRI CSL-98, 1979](https://lamport.azurewebsites.net/pubs/dig-sig.pdf) | the per-bit form as written down in [Merkle, CRYPTO '89](https://www.ralphmerkle.com/papers/Certified1979.pdf) §3 |
+| WOTS | [Merkle, CRYPTO '89](https://www.ralphmerkle.com/papers/Certified1979.pdf) §5 (the Winternitz improvement) | [RFC 8391](https://www.rfc-editor.org/rfc/rfc8391.html) §3, [W-OTS+ (ePrint 2017/965)](https://eprint.iacr.org/2017/965) |
+| XMSS | [Buchmann–Dahmen–Hülsing, PQCrypto 2011 (ePrint 2011/484)](https://eprint.iacr.org/2011/484) | [RFC 8391](https://www.rfc-editor.org/rfc/rfc8391.html) §4, Merkle '89 §6 (tree authentication) |
+| leanSig | [Drake–Khovratovich–Kudinov–Wagner (ePrint 2025/055)](https://eprint.iacr.org/2025/055) | target sum from [SPHINCS+C (ePrint 2022/778)](https://eprint.iacr.org/2022/778); named in the [LeanSig note (ePrint 2025/1332)](https://eprint.iacr.org/2025/1332) |
+| Poseidon2 | [Grassi–Khovratovich–Schofnegger (ePrint 2023/323)](https://eprint.iacr.org/2023/323) | [Poseidon (ePrint 2019/458)](https://eprint.iacr.org/2019/458) |
+| Loquat | [Zhang–Steinfeld–Esgin–Liu–Liu–Ruj, CRYPTO 2024 (ePrint 2024/868)](https://eprint.iacr.org/2024/868) | [FRI (ICALP 2018)](https://doi.org/10.4230/LIPIcs.ICALP.2018.14), Aurora's univariate sumcheck (EUROCRYPT 2019) |
+| CAPSS | [Feneuil–Rivain (ePrint 2025/061)](https://eprint.iacr.org/2025/061) | [SmallWood (ePrint 2025/1085)](https://eprint.iacr.org/2025/1085), [Anemoi, CRYPTO 2023 (ePrint 2022/840)](https://eprint.iacr.org/2022/840) |
+
+Every section number cited in this repo was checked against the actual
+paper text, not quoted from memory — where a section could not be
+verified, the code cites the paper without one.
 
 ## A note on scope
 
