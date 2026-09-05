@@ -8,6 +8,28 @@ This is a different question from the one the root README answers, and it
 has different answers. A scheme that is fast natively can be expensive
 in-circuit, and the other way round.
 
+## What each circuit verifies
+
+Every circuit's `src/main.nr` header says exactly what it checks, what it
+leaves out, and which paper and Rust function it follows. The short map:
+
+| Circuit | Scheme | Paper | Rust reference | Gates |
+|---------|--------|-------|----------------|-------|
+| [`lamport_verify`](lamport_verify/src/main.nr) | Lamport one-time signatures | [Lamport, SRI CSL-98, 1979](https://lamport.azurewebsites.net/pubs/dig-sig.pdf) | [`lamport::verify`](../lamport/src/lib.rs) | 33,756 |
+| [`leansig_verify`](leansig_verify/src/main.nr) | leanSig (target-sum Winternitz) | [ePrint 2025/055](https://eprint.iacr.org/2025/055), [2025/1332](https://eprint.iacr.org/2025/1332) | [`leansig::verify`](../leansig/src/lib.rs) | 72,304 |
+| [`wots_verify`](wots_verify/src/main.nr) | Winternitz OTS (plain WOTS) | [RFC 8391, sec. 3](https://www.rfc-editor.org/rfc/rfc8391.html) | [`wots::verify`](../wots/src/lib.rs) | 84,582 |
+| [`xmss_verify`](xmss_verify/src/main.nr) | XMSS (WOTS + Merkle tree) | [RFC 8391, sec. 4](https://www.rfc-editor.org/rfc/rfc8391.html) | [`xmss::verify`](../xmss/src/lib.rs) | 86,596 |
+| [`capss_verify`](capss_verify/src/main.nr) | CAPSS (SmallWood PIOP) | [ePrint 2025/061](https://eprint.iacr.org/2025/061) | [`capss::piop::verify`](../capss/src/piop.rs) | 97,199 |
+| [`loquat_verify`](loquat_verify/src/main.nr) | Loquat (FRI core + residuosity) | [ePrint 2024/868](https://eprint.iacr.org/2024/868) | [`loquat::fri::verify`](../loquat/src/fri.rs) | 100,937 |
+| [`hash_bench`](hash_bench/src/main.nr) | Poseidon2 vs SHA-256, per hash call | [ePrint 2023/323](https://eprint.iacr.org/2023/323) | — | ~73 vs ~36,000 |
+
+The Rust column is the tested reference implementation each circuit
+mirrors, at circuit-adjusted parameters (see "Conventions" below —
+different field, different hash, deliberately not byte-compatible).
+`loquat_verify` and `capss_verify` are shape measurements with documented
+gaps; their headers and the sections below spell out the caveats. Full
+citations are in [References](#references) at the bottom.
+
 ## Running them
 
 ```
@@ -113,7 +135,8 @@ openings are checked against.
 It also carries Loquat's **128 Legendre residuosity checks**, the part of
 the verifier that actually uses the public key. Computed naively each one
 is an exponentiation, ~380 gates. Instead the circuit uses the paper's own
-trick (its Algorithm 8): the prover supplies a square root `w`, and the
+trick (its Sec. 2.3 Eq. (1) and Sec. 4.3, with the square roots prepared
+outside the circuit per its Algorithms 9-10): the prover supplies a square root `w`, and the
 circuit checks `w * w == o` when the claimed bit says "residue" and
 `w * w == 5 * o` when it says "non-residue" (5 is a fixed non-residue of
 BN254's scalar field, checked by Euler's criterion). With an inverse check
@@ -330,3 +353,49 @@ in-circuit those two bits are simply outside the measured statement.
 - Paper claims about in-circuit cost are parameter- and hash-bound. CAPSS
   is advertised as the scheme with the cheap verifier; measured under the
   same conventions as everything else, it prices within 4% of Loquat.
+
+## References
+
+All section numbers cited in the circuit headers were checked against
+these versions.
+
+- L. Lamport, "Constructing Digital Signatures from a One Way Function",
+  SRI International technical report CSL-98, October 1979.
+  <https://lamport.azurewebsites.net/pubs/dig-sig.pdf>
+- R. Merkle, "A Certified Digital Signature", CRYPTO '89 (Winternitz
+  chains, sec. 5; tree authentication, sec. 6).
+  <https://www.ralphmerkle.com/papers/Certified1979.pdf>
+- A. Hülsing, Butin, Gazdag, Rijneveld, Mohaisen, "XMSS: eXtended Merkle
+  Signature Scheme", RFC 8391, May 2018. WOTS+ is sec. 3 (digits and
+  checksum, sec. 3.1.5); XMSS verification is sec. 4.1.10 (Algorithm 13,
+  `XMSS_rootFromSig`). <https://www.rfc-editor.org/rfc/rfc8391.html>
+- J. Drake, D. Khovratovich, M. Kudinov, B. Wagner, "Hash-Based
+  Multi-Signatures for Post-Quantum Ethereum", ePrint 2025/055 (the
+  generalized XMSS framework whose target-sum Winternitz instantiation
+  `leansig` implements). <https://eprint.iacr.org/2025/055>
+  The follow-up "Technical Note: LeanSig for Post-Quantum Ethereum",
+  ePrint 2025/1332, names the concrete scheme.
+  <https://eprint.iacr.org/2025/1332>
+- X. Zhang, R. Steinfeld, M. F. Esgin, J. K. Liu, D. Liu, S. Ruj,
+  "Loquat: A SNARK-Friendly Post-Quantum Signature based on the Legendre
+  PRF", CRYPTO 2024, ePrint 2024/868. Verification is Algorithm 7; the
+  witness-square-root residuosity trick is Sec. 2.3 Eq. (1) and Sec. 4.3,
+  with square roots prepared outside the circuit per Algorithms 9-10.
+  <https://eprint.iacr.org/2024/868>
+- E. Ben-Sasson, I. Bentov, Y. Horesh, M. Riabzev, "Fast Reed-Solomon
+  Interactive Oracle Proofs of Proximity" (FRI), ICALP 2018.
+- T. Feneuil, M. Rivain, "CAPSS: A Framework for SNARK-Friendly
+  Post-Quantum Signatures", ePrint 2025/061. Trimmed authentication
+  paths are its sec. 4.2; the SNARK-friendliness tweaks fill sec. 4.
+  <https://eprint.iacr.org/2025/061>
+- T. Feneuil, M. Rivain, "SmallWood: Hash-Based Polynomial Commitments
+  and Zero-Knowledge Arguments for Relatively Small Instances", ePrint
+  2025/1085. The PACS polynomial IOP — including the sum-to-zero check
+  `capss_verify` enforces (Fig. 6, Eq. (13)) — is its sec. 5.2.
+  <https://eprint.iacr.org/2025/1085>
+- L. Grassi, D. Khovratovich, M. Schofnegger, "Poseidon2: A Faster
+  Version of the Poseidon Hash Function", ePrint 2023/323.
+  <https://eprint.iacr.org/2023/323>
+- Gate counts come from `bb gates` (`circuit_size` under UltraHonk),
+  part of Aztec's Barretenberg proving backend: the `barretenberg/`
+  directory of <https://github.com/AztecProtocol/aztec-packages>.

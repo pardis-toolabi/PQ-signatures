@@ -4,6 +4,19 @@
 //! result is how little the tree costs: one hash per level, so a
 //! height-10 tree adds only 10 hashes on top of WOTS's 990. Going from a
 //! one-time signature to a 1024-time one is nearly free inside a proof.
+//!
+//! # References
+//!
+//! - RFC 8391, "XMSS: eXtended Merkle Signature Scheme", section 4 is the
+//!   standardized scheme; verification is section 4.1.10, whose
+//!   Algorithm 13 (XMSS_rootFromSig) is the Merkle climb in `main`.
+//!   https://www.rfc-editor.org/rfc/rfc8391.html
+//! - R. Merkle, "A Certified Digital Signature", CRYPTO '89, section 6 is
+//!   the original tree authentication path.
+//!   https://www.ralphmerkle.com/papers/Certified1979.pdf
+//! - Mirrors `xmss::verify` (../../../xmss/src/lib.rs) at circuit-adjusted
+//!   parameters (63 message digits, Poseidon2 over BN254). See
+//!   ../../README.md, "Conventions these circuits share".
 
 use poseidon::poseidon2::Poseidon2;
 
@@ -61,7 +74,9 @@ fn main(
         tops[i] = walk_chain(signature[i], MAX_STEPS - digits[i]);
     }
 
-    // Step 2: hash it into a leaf and climb to the root.
+    // Step 2: hash it into a leaf and climb to the root -- RFC 8391's
+    // XMSS_rootFromSig (section 4.1.10, Algorithm 13), minus its keyed
+    // bitmasked hashing.
     let mut node = Poseidon2::hash(tops, CHAINS);
     let index_bits: [bool; 254] = leaf_index.to_le_bits();
 

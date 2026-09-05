@@ -10,6 +10,15 @@
 //!   SHA-256    -> ~36000 gates per call
 //!
 //! That is roughly a 490x difference for the same job.
+//!
+//! # References
+//!
+//! - Poseidon2: L. Grassi, D. Khovratovich, M. Schofnegger, "Poseidon2: A
+//!   Faster Version of the Poseidon Hash Function", ePrint 2023/323.
+//!   https://eprint.iacr.org/2023/323
+//! - Gate counts are the UltraHonk `circuit_size` reported by `bb gates`,
+//!   from Aztec's Barretenberg proving backend (the `barretenberg/`
+//!   directory of https://github.com/AztecProtocol/aztec-packages).
 
 use poseidon::poseidon2::Poseidon2;
 

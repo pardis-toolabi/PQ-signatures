@@ -32,6 +32,25 @@
 //! What it is good for: showing how a proof-system verifier is shaped
 //! differently from a hash-chain verifier, and where its gates go.
 //!
+//! # References
+//!
+//! - X. Zhang, R. Steinfeld, M. F. Esgin, J. K. Liu, D. Liu, S. Ruj,
+//!   "Loquat: A SNARK-Friendly Post-Quantum Signature based on the
+//!   Legendre PRF", CRYPTO 2024, ePrint 2024/868.
+//!   https://eprint.iacr.org/2024/868
+//!   Signature verification is the paper's Algorithm 7 (Loquat Verify);
+//!   the residuosity gadget in `main` follows Section 2.3, Eq. (1) and
+//!   Section 4.3, "Efficient Verification of Quadratic Residuosity",
+//!   with the square roots prepared outside the circuit as in its
+//!   Algorithms 9-10.
+//! - FRI, the low-degree test whose query phase this circuit checks:
+//!   E. Ben-Sasson, I. Bentov, Y. Horesh, M. Riabzev, "Fast Reed-Solomon
+//!   Interactive Oracle Proofs of Proximity", ICALP 2018.
+//! - Mirrors `loquat::fri::verify` (../../../loquat/src/fri.rs) at
+//!   Loquat-128 parameters -- with the simplified tree geometry described
+//!   below -- plus the Legendre residuosity checks from
+//!   `loquat::sig::verify` (../../../loquat/src/sig.rs).
+//!
 //! Modeled on `loquat/src/fri.rs::verify`, which is the tested reference --
 //! but the tree geometry is simplified: the crate's layer 0 is virtual
 //! (no tree, nothing absorbed before the first fold challenge) and its
@@ -249,8 +268,11 @@ fn main(
     // verifier requires o != 0 and L_0(o) == pk_bit XOR t_bit. Computing a
     // Legendre symbol in-circuit would be an exponentiation by (p-1)/2,
     // roughly 380 gates per symbol. The paper's own arithmetization
-    // (Algorithm 8) proves residuosity instead with a prover-supplied
-    // square root: w with w*w == o when the claimed bit is 0 (residue),
+    // (Sec. 2.3 Eq. (1) and Sec. 4.3, "Efficient Verification of
+    // Quadratic Residuosity", 4B+1 constraints; the square roots are
+    // prepared outside the circuit per Algorithms 9-10) proves
+    // residuosity instead with a prover-supplied square root: w with
+    // w*w == o when the claimed bit is 0 (residue),
     // or w*w == ALPHA * o when it is 1 (ALPHA is a fixed non-residue, so
     // ALPHA * o is a residue exactly when o is not). One squaring, one
     // inverse check and one XOR are ~3 multiplication constraints; measured
@@ -291,7 +313,9 @@ fn main(
             // 2. From round 1 on, one value in this fiber is already
             //    pinned by the previous fold. This check binds the layers
             //    into a chain; without it each layer could be an unrelated
-            //    low-degree polynomial.
+            //    low-degree polynomial. It is FRI's round-consistency
+            //    check (Ben-Sasson-Bentov-Horesh-Riabzev, ICALP 2018),
+            //    run by Loquat Verify in Algorithm 7, Step 3.
             if has_carry {
                 assert(select_fiber(values, carried_slots[query][round]) == carried);
             }

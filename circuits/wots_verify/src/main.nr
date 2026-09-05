@@ -4,6 +4,19 @@
 //! shape, so it cannot "stop early" when a chain is short. Every chain
 //! costs the full 15 hashes no matter what its digit is. Natively WOTS
 //! walks about 500 steps on average; in-circuit it always pays 990.
+//!
+//! # References
+//!
+//! - R. Merkle, "A Certified Digital Signature", CRYPTO '89, section 5
+//!   introduces hash-chain (Winternitz) signing.
+//!   https://www.ralphmerkle.com/papers/Certified1979.pdf
+//! - RFC 8391 (XMSS), section 3.1 is the standardized WOTS+; the
+//!   digit-plus-checksum layout below is its section 3.1.5.
+//!   https://www.rfc-editor.org/rfc/rfc8391.html
+//! - Mirrors `wots::verify` (../../../wots/src/lib.rs) at circuit-adjusted
+//!   parameters: 63 message digits and Poseidon2 over BN254 here versus 64
+//!   digits and SHA-256 there. See ../../README.md,
+//!   "Conventions these circuits share".
 
 use poseidon::poseidon2::Poseidon2;
 
@@ -43,7 +56,8 @@ fn message_to_digits(message_digest: Field) -> [u32; CHAINS] {
     }
 
     // The checksum moves opposite to the digits, so raising any digit
-    // forces a checksum digit down, which a forger cannot do.
+    // forces a checksum digit down, which a forger cannot do. This is
+    // RFC 8391 section 3.1.5's checksum: the sum of (w - 1 - digit).
     let mut checksum: u32 = 0;
     for i in 0..MESSAGE_DIGITS {
         checksum += MAX_STEPS - digits[i];

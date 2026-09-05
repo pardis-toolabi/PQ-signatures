@@ -9,6 +9,21 @@
 //! has to budget the full 15 hashes for every chain. What it does buy is
 //! the removal of the checksum chains and a smaller chain count, which is
 //! a real but smaller saving. See ../README.md.
+//!
+//! # References
+//!
+//! - J. Drake, D. Khovratovich, M. Kudinov, B. Wagner, "Hash-Based
+//!   Multi-Signatures for Post-Quantum Ethereum", ePrint 2025/055. The
+//!   scheme verified here is the target-sum Winternitz instantiation of
+//!   that paper's generalized XMSS framework.
+//!   https://eprint.iacr.org/2025/055
+//! - The same authors' "Technical Note: LeanSig for Post-Quantum
+//!   Ethereum", ePrint 2025/1332, names and instantiates the concrete
+//!   scheme. https://eprint.iacr.org/2025/1332
+//! - Mirrors `leansig::verify` (../../../leansig/src/lib.rs) at
+//!   circuit-adjusted parameters: 254-bit digests and Poseidon2 over
+//!   BN254 here versus BabyBear there. See ../../README.md,
+//!   "Conventions these circuits share".
 
 use poseidon::poseidon2::Poseidon2;
 
@@ -55,7 +70,8 @@ fn main(
 
     // This single check replaces WOTS's checksum chains. Chains only walk
     // forward, so a forger can only raise digits, which would push the sum
-    // past the target and fail here.
+    // past the target and fail here. This is the target-sum Winternitz
+    // encoding of ePrint 2025/055.
     let mut sum: u32 = 0;
     for i in 0..DIGITS {
         sum += digits[i];

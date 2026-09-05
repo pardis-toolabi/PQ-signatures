@@ -9,6 +9,16 @@
 //! reveal, rebuilds the full list, and re-hashes it. Committing the key
 //! this way keeps the public input to one field element, and every scheme
 //! in this directory uses the same convention so the comparison is fair.
+//!
+//! # References
+//!
+//! - L. Lamport, "Constructing Digital Signatures from a One Way
+//!   Function", SRI International technical report CSL-98, October 1979.
+//!   https://lamport.azurewebsites.net/pubs/dig-sig.pdf
+//! - Mirrors `lamport::verify` (../../../lamport/src/lib.rs) at
+//!   circuit-adjusted parameters: 254 bits and Poseidon2 over BN254 here
+//!   versus 256 bits and SHA-256 there. See ../../README.md,
+//!   "Conventions these circuits share".
 
 use poseidon::poseidon2::Poseidon2;
 
@@ -28,7 +38,8 @@ fn main(
 
     for i in 0..BITS {
         // Hashing the revealed secret must land on the public key entry for
-        // whichever bit the message actually has.
+        // whichever bit the message actually has -- CSL-98's rule: reveal
+        // the preimage of whichever public image the message bit selects.
         let revealed = Poseidon2::hash([signature[i]], 1);
         let bit = bits[i] as Field;
 

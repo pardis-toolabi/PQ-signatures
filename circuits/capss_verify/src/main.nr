@@ -21,6 +21,21 @@
 //!    this circuit deliberately does not interoperate with it (see
 //!    circuits/README.md, "These do not interoperate" -- same reasoning).
 //!
+//! # References
+//!
+//! - T. Feneuil, M. Rivain, "CAPSS: A Framework for SNARK-Friendly
+//!   Post-Quantum Signatures", ePrint 2025/061.
+//!   https://eprint.iacr.org/2025/061
+//! - T. Feneuil, M. Rivain, "SmallWood: Hash-Based Polynomial Commitments
+//!   and Zero-Knowledge Arguments for Relatively Small Instances", ePrint
+//!   2025/1085 -- the argument system CAPSS compiles. The PIOP replayed
+//!   here is its Section 5.2, "The PACS Polynomial IOP" (restated in
+//!   CAPSS Section 2.2, Fig. 2). https://eprint.iacr.org/2025/1085
+//! - Mirrors `capss::piop::verify` (../../../capss/src/piop.rs) -- the
+//!   tested reference -- at the crate's `level_128` parameters, minus the
+//!   omissions listed below. See ../../README.md,
+//!   "Conventions these circuits share".
+//!
 //! # What is checked
 //!
 //! 1. The public key is a Poseidon2 digest over (iv, y), recomputed here
@@ -67,8 +82,9 @@
 //!
 //! - Merkle: N = 2^14 leaves as in `level_128`, opened through depth-10
 //!   paths below a 16-wide cap rather than full depth-14 paths. Trimmed
-//!   paths are one of the paper's own four SNARK-friendliness tweaks
-//!   (section 4.4), and the same cap shape as loquat_verify keeps the
+//!   paths are one of the paper's own SNARK-friendliness tweaks (its
+//!   section 4.2, "Trimming Authentication Paths"; section 4 collects
+//!   all four), and the same cap shape as loquat_verify keeps the
 //!   two circuit rows comparable.
 //! - The transcript is a rate-3 duplex sponge over the Poseidon2
 //!   permutation, not loquat_verify's one-hash-per-challenge chaining:
@@ -589,7 +605,9 @@ fn main(
     // Reconstruct each Q_k's low L_PRIME coefficients from the L_PRIME
     // opened evaluations, then spend the one remaining equation on the
     // sum-to-zero check. PS folds the constant evaluations at Omega, so
-    // `sum == 0` is literally `sum over omega of Q_k(omega) == 0`.
+    // `sum == 0` is literally `sum over omega of Q_k(omega) == 0` -- the
+    // PACS PIOP's final verifier check: SmallWood (ePrint 2025/1085)
+    // Section 5.2, Fig. 6 step 8(b), Equation (13).
     let ps = power_sums();
     for k in 0..RHO {
         let mut residuals: [Field; L_PRIME] = [0; L_PRIME];
