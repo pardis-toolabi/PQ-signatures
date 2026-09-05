@@ -73,7 +73,8 @@ fn digits_of(message: &[u8]) -> [u8; CHAIN_COUNT] {
     digits
 }
 
-#[derive(Clone)]
+// No Clone: `sign` consumes the key so it can only sign once, and a Clone
+// derive would hand callers a silent way around that.
 pub struct PrivateKey {
     chains: Vec<[u8; HASH_LEN]>,
 }
@@ -120,6 +121,11 @@ impl PrivateKey {
 ///
 /// RFC 8391 §3.1.6 calls this WOTS_pkFromSig: finish each chain's remaining
 /// 15 - d steps and see where it lands.
+///
+/// The signature must hold exactly `CHAIN_COUNT` chains (check with
+/// [`Signature::chain_count`]); a shorter one yields a truncated key that
+/// can never match a real public key, but callers should reject it
+/// explicitly rather than rely on that.
 pub fn recover_public_key(message: &[u8], signature: &Signature) -> PublicKey {
     let digits = digits_of(message);
     let chains = signature
@@ -139,6 +145,12 @@ pub fn verify(public_key: &PublicKey, message: &[u8], signature: &Signature) -> 
 }
 
 impl Signature {
+    /// How many chain values this signature carries; a valid one has
+    /// exactly `CHAIN_COUNT`.
+    pub fn chain_count(&self) -> usize {
+        self.chains.len()
+    }
+
     pub fn to_bytes(&self) -> Vec<u8> {
         self.chains.iter().flatten().copied().collect()
     }

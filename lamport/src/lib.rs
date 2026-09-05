@@ -90,7 +90,12 @@ impl PrivateKey {
 // CSL-98 §2's validation test, per-bit: each revealed value must hash to the
 // public entry selected by that bit of the digest.
 pub fn verify(public_key: &PublicKey, message: &[u8], signature: &Signature) -> bool {
-    if signature.values.len() != MESSAGE_BITS {
+    // A malformed key or signature must fail cleanly, not index past the
+    // end of a short vector.
+    if signature.values.len() != MESSAGE_BITS
+        || public_key.zero.len() != MESSAGE_BITS
+        || public_key.one.len() != MESSAGE_BITS
+    {
         return false;
     }
     let bits = message_bits(message);

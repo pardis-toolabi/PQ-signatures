@@ -135,7 +135,17 @@ pub fn verify(public_key: &PublicKey, message: &[u8], signature: &Signature) -> 
     // The Merkle walk below only consumes the low `height` bits of the
     // index, so without this bound any index congruent mod 2^height would
     // verify too — a malleable signature claiming a leaf it never used.
+    // Heights of 64+ would overflow the shift below, and no key this
+    // library builds can reach them.
+    if public_key.height >= 64 {
+        return false;
+    }
     if u64::from(signature.index) >= 1u64 << public_key.height {
+        return false;
+    }
+    // The inner WOTS signature must be exactly the right shape;
+    // `recover_public_key` would silently truncate a short one.
+    if signature.wots_signature.chain_count() != wots::CHAIN_COUNT {
         return false;
     }
     let recovered_wots_key = wots::recover_public_key(message, &signature.wots_signature);
