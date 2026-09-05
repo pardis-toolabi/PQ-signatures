@@ -1,3 +1,21 @@
+//! Winternitz one-time signatures (plain, pedagogical WOTS).
+//!
+//! References:
+//! - R. Merkle, "A Certified Digital Signature", CRYPTO '89. §5 ("The
+//!   Winternitz Improvement") introduces hash-chain signing — publish
+//!   y = F^16(x), reveal F^digit(x); §4's count-of-zeros trick is the
+//!   ancestor of the checksum below.
+//!   https://www.ralphmerkle.com/papers/Certified1979.pdf
+//! - A. Hülsing, "W-OTS+ — Shorter Signatures for Hash-Based Signature
+//!   Schemes", AFRICACRYPT 2013. https://eprint.iacr.org/2017/965
+//! - RFC 8391 (XMSS), §3: the standardized WOTS+.
+//!   https://www.rfc-editor.org/rfc/rfc8391.html
+//!
+//! This crate is the plain scheme: chains iterate raw SHA-256, with none of
+//! the per-chain, per-step keys and bitmasks that WOTS+ (RFC 8391 §3.1.2)
+//! adds for tighter security. The digit-plus-checksum layout matches
+//! RFC 8391 §3.1.5.
+
 use rand::RngCore;
 use sha2::{Digest, Sha256};
 
@@ -22,6 +40,8 @@ fn random_block() -> [u8; HASH_LEN] {
     block
 }
 
+// RFC 8391 §3.1.2 calls this the chaining function (its F is keyed and
+// bitmasked per step; here it is raw SHA-256 — see the module notes).
 fn chain(start: [u8; HASH_LEN], steps: u32) -> [u8; HASH_LEN] {
     let mut value = start;
     for _ in 0..steps {
@@ -38,6 +58,10 @@ fn digits_of(message: &[u8]) -> [u8; CHAIN_COUNT] {
         digits[i * 2 + 1] = byte & 0x0F;
     }
 
+    // RFC 8391 §3.1.5 checksum (Merkle '89 §4-§5 in spirit): raising any
+    // message digit lowers this sum, so a forger would have to walk a
+    // checksum chain backward. Max value 64 * 15 = 960 < 16^3, so three
+    // base-16 digits always suffice.
     let checksum: u32 = digits[..MESSAGE_DIGITS]
         .iter()
         .map(|&d| CHAIN_STEPS - d as u32)
@@ -77,6 +101,8 @@ impl PrivateKey {
     /// Consumes the key: like Lamport, a WOTS key pair is only safe to use
     /// for a single message. Signing reveals partial hash chains, and a
     /// second signature would reveal enough to forge new ones.
+    ///
+    /// Merkle '89 §5: the signature value for digit d is F^d(x).
     pub fn sign(self, message: &[u8]) -> Signature {
         let digits = digits_of(message);
         let chains = self
@@ -91,6 +117,9 @@ impl PrivateKey {
 
 /// Rebuilds the public key a valid signature must have come from. XMSS uses
 /// this directly, since it never stores WOTS public keys on their own.
+///
+/// RFC 8391 §3.1.6 calls this WOTS_pkFromSig: finish each chain's remaining
+/// 15 - d steps and see where it lands.
 pub fn recover_public_key(message: &[u8], signature: &Signature) -> PublicKey {
     let digits = digits_of(message);
     let chains = signature

@@ -1,5 +1,13 @@
 # WOTS (Winternitz One-Time Signature)
 
+Like Lamport signatures, WOTS lets you prove a message came from you using
+nothing but a hash function — no number theory, nothing a quantum computer is
+known to break. The problem it tackles is practicality: Lamport signatures
+are honest but bulky, and Robert Winternitz's observation (published in
+Merkle's 1979 paper) was that you can trade a little computation for a lot of
+size by signing several bits at a time with a single hash *chain* instead of
+one secret per bit.
+
 WOTS solves Lamport's biggest problem: signature size. A Lamport signature
 needs one hash value per **bit** of the message (256 of them). WOTS instead
 needs one hash value per **group of bits**, which means far fewer values —
@@ -24,6 +32,22 @@ chain(x, k) = H(H(H( ... H(x) ... )))     (k times)
 Going forward (computing more hashes) is easy for anyone. Going backward
 (finding what `x` was, given `chain(x, k)`) is as hard as reversing a hash —
 which is the same assumption Lamport relies on.
+
+**A tiny worked example.** Take a chain of length 3 and pretend hashing just
+scrambles letters: start with a secret `x = "fox"`, and suppose
+
+```
+"fox" --H--> "tlq" --H--> "wze" --H--> "mrk"
+ x           chain(x,1)   chain(x,2)   chain(x,3)  <- public key
+```
+
+The public key is the end of the chain, `"mrk"`. To sign the digit **2**,
+reveal `chain(x, 2) = "wze"`. The verifier walks the remaining `3 - 2 = 1`
+step: `H("wze") = "mrk"` — it lands exactly on the public key, so the digit
+really was 2. Someone who only saw `"wze"` could hash forward and claim digit
+3, but could never produce `"tlq"` (digit 1) — that would mean running `H`
+backward. That one-way asymmetry is the entire scheme; the checksum below
+exists purely to punish the "hash forward and claim a bigger digit" cheat.
 
 ## Step by step
 
@@ -122,3 +146,38 @@ One simplification to be aware of: the chains here iterate raw SHA-256.
 Real WOTS+ (RFC 8391) keys and addresses every hash call — a per-chain,
 per-step domain separator — to prevent values being reused across chains
 or key pairs. This teaching version omits that.
+
+## Where this lives in the code
+
+| Concept | Code |
+| --- | --- |
+| Walking a hash chain forward | `chain` in [`src/lib.rs`](src/lib.rs) |
+| Message digits + checksum digits | `digits_of` in [`src/lib.rs`](src/lib.rs) |
+| Chain starts (private key) | `PrivateKey::generate` in [`src/lib.rs`](src/lib.rs) |
+| Chain ends (public key) | `PrivateKey::public_key` in [`src/lib.rs`](src/lib.rs) |
+| Signing — walk each chain `digit` steps | `PrivateKey::sign` in [`src/lib.rs`](src/lib.rs) |
+| Finishing the walk (used directly by XMSS) | `recover_public_key` in [`src/lib.rs`](src/lib.rs) |
+| Verifying — recovered key must match | `verify` in [`src/lib.rs`](src/lib.rs) |
+
+## References
+
+This crate implements the *plain*, pedagogical WOTS. The chain idea and the
+checksum come from Merkle's paper; the digit/checksum layout (base `w`
+digits, `len_2` checksum digits) follows the standardized description in
+RFC 8391; the per-step keying that this crate deliberately omits is the
+contribution of WOTS+.
+
+- R. Merkle, ["A Certified Digital
+  Signature"](https://www.ralphmerkle.com/papers/Certified1979.pdf), CRYPTO
+  '89 (written 1979). §5 ("The Winternitz Improvement") introduces hash-chain
+  signing — publish `y = F^16(x)`, reveal `F^digit(x)` — including the
+  raise-a-digit forgery and the checksum fix; §4's count-of-zeros trick is
+  the checksum's ancestor.
+- A. Hülsing, ["W-OTS+ — Shorter Signatures for Hash-Based Signature
+  Schemes"](https://eprint.iacr.org/2017/965), AFRICACRYPT 2013 (ePrint
+  2017/965). Adds per-chain, per-step keys and bitmasks to the chain
+  function, giving tighter security proofs and shorter signatures.
+- [RFC 8391](https://www.rfc-editor.org/rfc/rfc8391.html), "XMSS: eXtended
+  Merkle Signature Scheme", §3. The standardized WOTS+: §3.1.2 defines the
+  chaining function, §3.1.5 the checksum and signature generation, §3.1.6
+  verification by recomputing the public key (`WOTS_pkFromSig`).
