@@ -1,5 +1,16 @@
 # CAPSS
 
+Picture one fixed scrambling machine: eight numbers go in, eight
+thoroughly mixed numbers come out, and the mixing is so tangled that
+running it backwards from partial information is hopeless. CAPSS builds a
+whole signature scheme out of that single machine. Your secret key is
+half of an input; your public key is half of the matching output. Signing
+means convincing someone you know the hidden half — without showing it —
+and every tool used in the convincing (the hashing, the commitment tree,
+the random challenges) is the *same machine again* in a different
+wrapper. One permutation, three jobs. The rest of this README is the
+machinery that makes "prove it without showing it" actually work.
+
 CAPSS (IACR ePrint [2025/061](https://eprint.iacr.org/2025/061)) takes a
 different route to a post-quantum signature than anything else in this
 repo. Lamport, WOTS, XMSS and leanSig are built from hash chains. Loquat is
@@ -94,6 +105,37 @@ they do three jobs:
 That split matters later: parallel constraints must hold *everywhere*,
 aggregated ones only need to *sum* to zero. The proof system treats them
 differently for exactly that reason.
+
+### A three-round toy, and the splice it catches
+
+Shrink everything to see the idea. Take a toy permutation with a
+two-element state and 3 rounds, and run it from `(5, 9)`, recording every
+intermediate state (numbers made up):
+
+```
+(5,9) -> round 0 -> (3,1) -> round 1 -> (8,4) -> round 2 -> (2,7)
+```
+
+The witness table gets one column per round, holding the state going in
+and the state coming out:
+
+| | col 0 | col 1 | col 2 |
+|-------|--------|--------|--------|
+| in | (5, 9) | (3, 1) | (8, 4) |
+| out | (3, 1) | (8, 4) | (2, 7) |
+
+A parallel constraint looks at one column alone: "is `(3,1)` really round
+0 applied to `(5,9)`?" A wiring constraint looks at a seam: column 0's
+`out` must equal column 1's `in`.
+
+Now let a cheater swap in column 1 from *someone else's* honest run — say
+`in (6,6), out (9,2)`. Every column still passes its own round check,
+because each one really is a genuine round of the permutation. The lie is
+only visible at the seams: `(3,1) != (6,6)` and `(9,2) != (8,4)`. Nothing
+but the wiring can see it, which is why the wiring exists. `pacs.rs` runs
+this exact attack against the real 11-round table
+(`a_broken_chain_is_caught_by_the_wiring_constraints`), and `sig.rs`
+repeats it end-to-end through a full signature.
 
 ### Why the round constraint is degree 7, and not worse
 
@@ -283,6 +325,23 @@ breaks at least one constraint. A witness spliced from two different
 executions passes every parallel constraint and is caught only by the
 wiring — which is precisely what wiring exists to catch.
 
+## Where this lives in the code
+
+Concept by concept, with the paper section each file implements (all
+section numbers verified against the texts; full citations at the end):
+
+| Concept | File | Paper, section |
+|---------|------|----------------|
+| Goldilocks field arithmetic | `field.rs` | Plonky2 whitepaper; CAPSS §6 uses the field |
+| Anemoi permutation, Flystel, round count | `anemoi.rs` | Anemoi §4 (Flystel; §4.4 odd char), §5.1 (round), §5.2 Eq. (2) (rounds) |
+| One-way function, keys, CICO | `keys.rs` | CAPSS §2.1 ("One-Way Function using Truncation") |
+| Sponge XOF, Fiat-Shamir transcript | `transcript.rs` | Anemoi §3.1 (sponge); CAPSS §2.1 (XOF, Hirose tweak), §4.3 (opening challenge) |
+| Jive-compressed Merkle trees | `merkle.rs` | Anemoi §3.2, Def. 2 (Jive); CAPSS §2.1, §4.1 (arity) |
+| Witness table, both constraint families | `pacs.rs` | CAPSS §3.1 (regular permutations); SmallWood §5.1 (PACS) |
+| Degree-enforcing commitment | `decs.rs` | SmallWood §3 (DECS, Fig. 1); CAPSS §4.4 (powers batching), §5.1 (high coefficients) |
+| Polynomial IOP, sum-to-zero check | `piop.rs` | SmallWood §5.2 (Protocol 6; Eqs. (10), (13)) |
+| `sign` / `verify`, the four-hash chain | `sig.rs` | CAPSS §5.1 (scheme), §5.2 (unforgeability) |
+
 ## Fidelity — read this before trusting anything
 
 **Faithful to the paper:** the one-way function and key structure; all the
@@ -334,3 +393,28 @@ against which any of it could be checked. Everything above is
 self-consistency and negative testing. That is weaker than correctness.
 
 **Do not use this to protect anything.**
+
+## References
+
+- Thibauld Feneuil and Matthieu Rivain. *CAPSS: A Framework for
+  SNARK-Friendly Post-Quantum Signatures.* IACR ePrint
+  [2025/061](https://eprint.iacr.org/2025/061). Use the latest version —
+  v1's headline numbers were corrected upward in later revisions.
+- Thibauld Feneuil and Matthieu Rivain. *SmallWood: Hash-Based Polynomial
+  Commitments and Zero-Knowledge Arguments for Relatively Small
+  Instances.* IACR ePrint [2025/1085](https://eprint.iacr.org/2025/1085).
+  The proof system CAPSS runs on — same two authors.
+- Clémence Bouvier, Pierre Briaud, Pyrros Chaidos, Léo Perrin, Robin
+  Salen, Vesselin Velichkov, and Danny Willems. *New Design Techniques
+  for Efficient Arithmetization-Oriented Hash Functions: Anemoi
+  Permutations and Jive Compression Mode.* IACR ePrint
+  [2022/840](https://eprint.iacr.org/2022/840); CRYPTO 2023.
+- Polygon Zero Team. *Plonky2: Fast Recursive Arguments with PLONK and
+  FRI.* 2022. Origin of the Goldilocks field `2^64 - 2^32 + 1` (credited
+  there to Hamish Ivey-Law).
+  [Whitepaper PDF](https://github.com/0xPolygonZero/plonky2/blob/main/plonky2/plonky2.pdf)
+- Reference implementations by the CAPSS authors:
+  [C](https://github.com/CryptoExperts/smallwood) (the byte-level
+  authority) and
+  [Python](https://github.com/CryptoExperts/smallwood-python)
+  (proof of concept). Neither publishes test vectors.

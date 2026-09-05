@@ -1,5 +1,11 @@
 //! Arithmetic over the Goldilocks field, `p = 2^64 - 2^32 + 1`.
 //!
+//! Reference: the field was popularised (and named) by the Plonky2 proof
+//! system — Polygon Zero Team, "Plonky2: Fast Recursive Arguments with
+//! PLONK and FRI" (2022), which credits the modulus to Hamish Ivey-Law.
+//! CAPSS (ePrint 2025/061, Section 6) benchmarks its C implementation
+//! over this field.
+//!
 //! The CAPSS paper's headline parameter sets use the BN254 scalar field,
 //! but its C reference implementation ships a Goldilocks build (Anemoi,
 //! `alpha = 7`, `t = 8`, 11 rounds) and the paper reports Goldilocks as

@@ -1,5 +1,10 @@
 //! Merkle commitments compressed with Jive, not with a sponge.
 //!
+//! Reference: Jive is Definition 2 in the Anemoi paper (ePrint 2022/840,
+//! Section 3.2, "Merkle Compression Function: the Jive Mode"). CAPSS
+//! (ePrint 2025/061) adopts it for Merkle trees in Section 2.1 and makes
+//! the tree arity a trade-off knob in Section 4.1.
+//!
 //! This is the detail most likely to be got wrong when reading the CAPSS
 //! paper quickly. Leaves are hashed with the sponge XOF in `transcript`,
 //! but internal nodes are compressed with **Jive**, a Davies-Meyer
@@ -61,6 +66,8 @@ pub fn node_width(arity: usize) -> usize {
 
 /// Jive compression: `arity` child nodes in, one node out.
 ///
+/// `Jive(x) = sum_i P'_i(x)` with `P'(x) = P(x) + x`, per Definition 2
+/// of the Anemoi paper (Section 3.2).
 /// The feed-forward `P(x) + x` is what makes this one-way rather than
 /// merely a permutation restricted to a subspace — without it, inverting
 /// the compression would only need one inverse permutation call.

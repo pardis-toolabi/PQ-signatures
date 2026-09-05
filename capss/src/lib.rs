@@ -1,5 +1,16 @@
 //! CAPSS: a SNARK-friendly post-quantum signature framework
-//! (IACR ePrint 2025/061).
+//! (Feneuil & Rivain, IACR ePrint 2025/061).
+//!
+//! References used throughout the crate (all verified against the texts):
+//! - CAPSS: T. Feneuil, M. Rivain, "CAPSS: A Framework for SNARK-Friendly
+//!   Post-Quantum Signatures", ePrint 2025/061.
+//! - SmallWood: T. Feneuil, M. Rivain, "SmallWood: Hash-Based Polynomial
+//!   Commitments and Zero-Knowledge Arguments for Relatively Small
+//!   Instances", ePrint 2025/1085.
+//! - Anemoi: C. Bouvier, P. Briaud, P. Chaidos, L. Perrin, R. Salen,
+//!   V. Velichkov, D. Willems, "New Design Techniques for Efficient
+//!   Arithmetization-Oriented Hash Functions: Anemoi Permutations and
+//!   Jive Compression Mode", ePrint 2022/840, CRYPTO 2023.
 //!
 //! The crate signs and verifies. The stack, bottom up: the Goldilocks
 //! field and the Anemoi permutation; the one-way function and key pair;

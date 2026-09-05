@@ -1,8 +1,16 @@
 # CAPSS specification notes
 
 Condensed from IACR ePrint [2025/061](https://eprint.iacr.org/2025/061)
-("CAPSS: A Framework for SNARK-Friendly Post-Quantum Signatures"), so a
-future session does not have to re-fetch the paper.
+("CAPSS: A Framework for SNARK-Friendly Post-Quantum Signatures",
+Thibauld Feneuil and Matthieu Rivain), so a future session does not have
+to re-fetch the paper. Companion papers, both verified: **SmallWood** is
+ePrint [2025/1085](https://eprint.iacr.org/2025/1085) ("SmallWood:
+Hash-Based Polynomial Commitments and Zero-Knowledge Arguments for
+Relatively Small Instances", same authors — DECS is its §3, LVCS §4.1,
+PACS §5.1, the PIOP §5.2); **Anemoi** is ePrint
+[2022/840](https://eprint.iacr.org/2022/840) (Bouvier, Briaud, Chaidos,
+Perrin, Salen, Velichkov, Willems, CRYPTO 2023 — sponge §3.1, Jive §3.2,
+Flystel §4, round function §5.1, round-count rule §5.2 Eq. (2)).
 
 **Use paper v3 (Oct 2025), not v1.** v1 and the authors' marketing page
 claim "9–13.3 KB / 19K–29K R1CS"; v3 corrects this to **9.5–15.5 KB /
@@ -230,7 +238,8 @@ security formulas; all parameter sets; round-count derivation.
   64-bit fields (with powers batching, `sec_fpp` is only 114 bits for
   Goldilocks).
 
-**Four SNARK-friendliness tweaks** (§4.4), worth ~−34% constraints for
+**Four SNARK-friendliness tweaks** (§4.1–4.4: Merkle trade-off, trimmed
+paths, challenge decomposition, powers batching), worth ~−34% constraints for
 +19% size: Merkle parameter trade-off (arity > 2); trimmed authentication
 paths; opening-challenge decomposition into one-hot selector bits; powers
 batching.

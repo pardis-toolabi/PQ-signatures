@@ -1,5 +1,14 @@
 //! The PACS / RegRounds arithmetization of a keygen execution.
 //!
+//! Reference: CAPSS (ePrint 2025/061), Section 3.1, "Arithmetization of
+//! Regular Permutations" — the witness matrix, the verification function
+//! `G` of degree `alpha`, the wiring and boundary constraints, and every
+//! dimension formula below are stated there. The PACS statement syntax
+//! itself (parallel + aggregated constraint systems) is SmallWood
+//! (ePrint 2025/1085), Section 5.1. "RegRounds" is the reference
+//! implementation's name for this layout; the paper says "regular
+//! permutation".
+//!
 //! This is the bridge between "I know the secret `x`" and "here is a
 //! matrix satisfying a fixed set of low-degree polynomial constraints".
 //! Everything above it in CAPSS — DECS, LVCS, PCS, the PIOP — only ever
@@ -23,6 +32,10 @@
 //! m2 = (s-1)*t + |iv| + |y|       aggregated constraints
 //! d  = alpha                      constraint degree
 //! ```
+//!
+//! (Section 3.1 counts `m1 = b` vector-valued constraints, one `G` per
+//! packed round; here `G`'s `t + |v|` scalar identities are counted
+//! individually, so the two figures differ by that factor.)
 //!
 //! ## Two constraint families
 //!
@@ -178,6 +191,11 @@ pub fn secret_to_witness(iv: &[Fp; IV_SIZE], x: &[Fp; SECRET_SIZE]) -> Matrix {
 /// One round verification: `2*l = t` identities of degree `alpha`,
 /// checking that `output` is round `round` applied to `input`.
 ///
+/// This is CAPSS Section 3.1's verification function `G`, instantiated
+/// with the closed Flystel (Anemoi paper, Corollary 2 in Section 4.2:
+/// verifying the open Flystel is equivalent to evaluating the low-degree
+/// closed one).
+///
 /// The round is constants, then the linear layer, then a Flystel per
 /// pair. The first two are affine, so fold them in and let `(a, b)` be
 /// the pair the Flystel actually sees. The open Flystel computes
@@ -240,7 +258,8 @@ pub fn parallel_constraints(witness: &Matrix, column: usize) -> Vec<Fp> {
 }
 
 /// The `m2` aggregated constraints: wiring, then the two bindings to the
-/// public key.
+/// public key (CAPSS Section 3.1's "global linear" and "boundary"
+/// constraints).
 ///
 /// Wiring is `w_{b*t+i,k} - w_{i,k+1} = 0` — the last state of column
 /// `k` is the first state of column `k+1`. Without it a prover could put

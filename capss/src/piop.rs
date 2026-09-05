@@ -2,6 +2,13 @@
 //! matrix satisfying the PACS constraints" into something a verifier can
 //! check from a handful of opened points.
 //!
+//! Reference: SmallWood (ePrint 2025/1085), Section 5.2, "The PACS
+//! Polynomial IOP" (Protocol 6). The row interpolation with `l'` blinding
+//! points is their LVCS idea (Section 4.1); `Q_k` below is their
+//! Eq. (10), the sum-over-Omega check their Eq. (13), and the masks
+//! summing to zero over Omega are stated just above Eq. (10). CAPSS
+//! (ePrint 2025/061, Section 2.2) restates the same protocol.
+//!
 //! ## The identity
 //!
 //! Every row of the `n x s` witness matrix is lifted into a polynomial.
@@ -30,7 +37,15 @@
 //! sum over omega in Omega of Q_k(omega) = 0
 //! ```
 //!
+//! (SmallWood Eq. (13); their `deg_q` bound is Eq. (9), which reads
+//! `d*(l' + s - 1) + s - 1` for the parallel family — the `+ s` here is
+//! one looser, which only over-provisions the degree.)
+//!
 //! ## Why the two constraint families are weighted differently
+//!
+//! (These are SmallWood Eq. (10)'s two weight kinds: polynomials
+//! `Gamma'_{i,j}(X)` of degree `s-1` for parallel constraints, scalars
+//! `gamma'_{i,j}` for aggregated ones.)
 //!
 //! A **parallel** constraint has to vanish at *every* `omega`
 //! individually — it is the round verification, and a round that is wrong
@@ -270,7 +285,9 @@ fn expand(domain: &[u8], seed: &Digest, index: usize, count: usize) -> Vec<Fp> {
     xof(domain, &input, count)
 }
 
-/// Lifts each witness row into a polynomial of degree `l' + s - 1`.
+/// Lifts each witness row into a polynomial of degree `l' + s - 1`
+/// (SmallWood Section 4.1's LVCS row encoding: witness values on `Omega`,
+/// `l'` random points for zero knowledge).
 fn row_polynomials(parameters: &Parameters, witness: &Matrix, seed: &Digest) -> Vec<Vec<Fp>> {
     let dimensions = dimensions();
     let points = interpolation_points(dimensions.columns, parameters.opened_count);
@@ -286,7 +303,8 @@ fn row_polynomials(parameters: &Parameters, witness: &Matrix, seed: &Digest) -> 
 }
 
 /// Masks of degree `deg_q`, uniform subject to summing to zero over
-/// `Omega`.
+/// `Omega` — SmallWood's `M_1..M_rho` with `sum_{omega} M_i(omega) = 0`
+/// (Section 5.2, just above Eq. (10)).
 fn mask_polynomials(parameters: &Parameters, seed: &Digest) -> Vec<Vec<Fp>> {
     let columns = parameters.columns();
     let scale = Fp::new(columns as u64).inverse().expect("s is far below p");
@@ -568,6 +586,9 @@ pub fn prove(
 
 /// Checks a proof.
 ///
+/// This is CAPSS Section 5.1's verification style: recompute the
+/// transcript from the signature and compare, rather than check
+/// constraints explicitly.
 /// Note what is *not* here: the witness matrix is never rebuilt and
 /// `pacs::constraints_are_satisfied` is never called. The verifier
 /// replays the Fiat-Shamir chain, checks `l'` Merkle paths, evaluates the

@@ -1,5 +1,10 @@
 //! The one-way function and the key pair.
 //!
+//! Reference: CAPSS (ePrint 2025/061), Section 2.1 — "One-Way Function
+//! using Truncation" defines `OWF`, and the same section ties its
+//! preimage resistance to the CICO problem for the permutation. The key
+//! structure `sk = w`, `pk = (iv, y)` is Section 2's overview.
+//!
 //! CAPSS keys are a single call to the permutation with part of the
 //! input and part of the output pinned down:
 //!

@@ -1,5 +1,11 @@
 //! Signing and verification.
 //!
+//! Reference: CAPSS (ePrint 2025/061), Section 5.1, "Description of the
+//! Signature Scheme" — the sign/verify algorithms, the four-hash
+//! Fiat-Shamir chain (with its optional grinding, not implemented here),
+//! and verification as transcript recomputation. Unforgeability is their
+//! Section 5.2.
+//!
 //! The whole signature is one non-interactive proof of the statement
 //! "I know an `x` with `Tr_{|y|}( P(iv, x) ) = y`", where `(iv, y)` is the
 //! public key. There is no separate response phase, no key-dependent

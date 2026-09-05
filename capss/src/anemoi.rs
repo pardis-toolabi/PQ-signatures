@@ -1,5 +1,14 @@
 //! The Anemoi permutation over Goldilocks.
 //!
+//! Reference: Bouvier et al., "Anemoi Permutations and Jive Compression
+//! Mode" (ePrint 2022/840, CRYPTO 2023) — the Flystel is their Section 4
+//! (odd-characteristic instance Section 4.4, open/closed duality
+//! Corollary 2), the round function (constants, diffusion, PHT, S-box
+//! layer) Section 5.1, and the round-count rule Section 5.2, Eq. (2):
+//! their Table 1a gives 11 rounds for `alpha = 7`, `l = 4` at 128-bit
+//! security, which is the count used here. CAPSS (ePrint 2025/061,
+//! Section 2.1) picks this permutation as its single symmetric primitive.
+//!
 //! Parameters match the CAPSS reference C configuration: `alpha = 7`,
 //! state width `t = 8`, 11 rounds, so `l = t/2 = 4` Flystel pairs per
 //! round. CAPSS uses one permutation for all three of its primitives —
@@ -81,7 +90,13 @@ struct Parameters {
     constants_y: [[Fp; L]; ROUNDS],
     diffusion: [[Fp; L]; L],
     beta: Fp,
-    /// `gamma = 0` and `delta = beta^-1`, the standard Anemoi choice.
+    /// `gamma = 0` and `delta = beta^-1`. The Anemoi paper's Flystel_p
+    /// (Section 4.4, Fig. 4b) puts the constants the other way around —
+    /// `Q_gamma = g*x^2 + g^-1`, `Q_delta = g*x^2`, i.e. `gamma = g^-1`,
+    /// `delta = 0`. This crate's swap is a documented deviation, applied
+    /// consistently here and in the arithmetization; additive constants
+    /// cancel in differentials, and `Q_gamma != Q_delta` (all Section 4.4
+    /// needs to avoid its invariant subset) still holds.
     gamma: Fp,
     delta: Fp,
 }
@@ -152,7 +167,8 @@ fn apply_diffusion(matrix: &[[Fp; L]; L], vector: [Fp; L]) -> [Fp; L] {
 }
 
 /// Anemoi's linear layer: diffuse each half, then a pseudo-Hadamard
-/// transform to couple them.
+/// transform to couple them (the paper's `M` and `P` layers,
+/// Section 5.1).
 ///
 /// The `y` half is rotated by one position before diffusion. That is how
 /// Anemoi gets two different matrices out of one: `M_y = M_x . rho`. The
@@ -171,8 +187,10 @@ fn linear_layer(x: &mut [Fp; L], y: &mut [Fp; L]) {
     }
 }
 
-/// The open Flystel. `x^(1/alpha)` is the expensive part: a full
-/// exponentiation by `alpha^-1 mod (p-1)`, about 64 squarings.
+/// The open Flystel (Anemoi paper Section 4.2, Fig. 4b). `x^(1/alpha)`
+/// is the expensive part: a full exponentiation by `alpha^-1 mod (p-1)`,
+/// about 64 squarings. Its low-degree verification twin, the closed
+/// Flystel, is what the arithmetization uses (Corollary 2 there).
 fn flystel(x: Fp, y: Fp) -> (Fp, Fp) {
     let parameters = parameters();
     let quadratic = |value: Fp, offset: Fp| parameters.beta * value.square() + offset;
@@ -353,7 +371,8 @@ mod tests {
 
     #[test]
     fn closed_flystel_verifies_the_open_one() {
-        // The duality the arithmetization depends on. Given input (x, y)
+        // The duality the arithmetization depends on (Anemoi paper,
+        // Corollary 2 in Section 4.2). Given input (x, y)
         // and output (u, v), the relation holds with no inverse S-box
         // anywhere — just two constraints of degree alpha:
         //

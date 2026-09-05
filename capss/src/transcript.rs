@@ -1,6 +1,12 @@
 //! The XOF and the Fiat-Shamir transcript, both built from Anemoi in
 //! sponge mode.
 //!
+//! Reference: the sponge itself is Section 3.1 of the Anemoi paper
+//! (ePrint 2022/840). CAPSS (ePrint 2025/061) specifies the sponge-based
+//! XOF, its capacity, the Hirose padding tweak, and domain separation in
+//! Section 2.1; the four-hash Fiat-Shamir chain the `Transcript` serves
+//! is Section 5.1's signing algorithm.
+//!
 //! CAPSS's selling point is a "zero security gap": the permutation is the
 //! only assumption, and it supplies all three primitives — the one-way
 //! function, Merkle compression (Jive, in `merkle`), and the extendable
@@ -227,7 +233,8 @@ impl Transcript {
     /// indices — the rejection rate doubling as the scheme's proof of
     /// work. We reject per index rather than per whole challenge, which
     /// gives the same distribution over sets but does not provide the
-    /// grinding side effect.
+    /// grinding side effect. (CAPSS Section 4.3 specifies the whole-
+    /// challenge rejection and its built-in proof of work.)
     pub fn challenge_distinct_indices(
         &mut self,
         label: &[u8],

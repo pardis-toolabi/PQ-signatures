@@ -1,5 +1,11 @@
 //! DECS — the degree-enforcing commitment scheme, the bottom layer of the
-//! SmallWood stack CAPSS is built on (`notes/capss-spec.md`, section 3.2).
+//! SmallWood stack CAPSS is built on.
+//!
+//! Reference: SmallWood (ePrint 2025/1085), Section 3 — the scheme is
+//! their Figure 1, inherited from TCitH and recast there as a
+//! "small-domain PCS". The powers batching and the high-coefficients-only
+//! transmission are CAPSS tweaks: ePrint 2025/061, Sections 4.4 and 5.1
+//! respectively. See also `notes/capss-spec.md`.
 //!
 //! A plain Merkle commitment to `N` evaluations says nothing about the
 //! degree of the polynomial those evaluations came from. DECS adds that
@@ -146,7 +152,8 @@ pub struct Commitment {
 }
 
 impl Commitment {
-    /// Steps 1-3. Pure: no transcript, because the root has to exist
+    /// Steps 1-3 (the Commit phase of SmallWood's Figure 1, Section 3).
+    /// Pure: no transcript, because the root has to exist
     /// before the Fiat-Shamir chain can absorb it.
     ///
     /// `mask_seed` must be secret and freshly random — the masks are the
@@ -215,7 +222,9 @@ impl Commitment {
         self.salt
     }
 
-    /// Step 5 and the opening. `gammas` must be the output of
+    /// Step 5 and the opening (SmallWood Figure 1's degree-enforcing
+    /// round and Open; the high-coefficients-only `R^(high)` is CAPSS
+    /// Section 5.1). `gammas` must be the output of
     /// [`challenge_gammas`] for this root.
     ///
     /// In the full protocol the opening indices come from `h4`, after `Q`
@@ -308,7 +317,9 @@ fn absorb_high_coefficients(high_coefficients: &[Vec<Fp>], transcript: &mut Tran
 }
 
 /// Checks an opening and returns the reconstructed `R_k` polynomials,
-/// each with exactly `d_decs + 1` coefficients.
+/// each with exactly `d_decs + 1` coefficients. (This is CAPSS
+/// Section 5.1's `DECS.RecomputeTranscript`: rebuild `R` from the opened
+/// evaluations plus the transmitted high part, rather than receive it.)
 ///
 /// The return value is the useful output, not a bare `bool`: the layers
 /// above DECS consume these polynomials, and a caller that only wants a
