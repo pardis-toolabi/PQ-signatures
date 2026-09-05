@@ -1,2 +1,4 @@
 /target
 Cargo.lock
+HANDOFF.md
+circuits/hash_bench/target/
