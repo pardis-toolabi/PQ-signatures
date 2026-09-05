@@ -52,7 +52,7 @@ Pick the path that matches why you are here:
 ## Running it
 
 ```
-cargo test --workspace          # 173 tests
+cargo test --workspace          # 176 tests
 cargo run --release -p compare  # the table below
 cargo run --release -p loquat --example loquat128
 ```
@@ -214,7 +214,7 @@ then reach for an audited implementation of the standardized version.
 ## Status
 
 **Implemented, tested, and measured:** Lamport, WOTS, XMSS, leanSig,
-Loquat, CAPSS, and six Noir circuits. **173 Rust tests plus 14 Noir tests
+Loquat, CAPSS, and six Noir circuits. **176 Rust tests plus 14 Noir tests
 pass, and `cargo clippy --workspace` is clean.**
 
 **Loquat** is a full implementation of ePrint 2024/868 at the paper's real
