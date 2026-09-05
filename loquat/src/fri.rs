@@ -247,6 +247,11 @@ pub fn replay_transcript(
     challenges.push(transcript.challenge_fp2(b"fri-fold"));
     for round in 1..params.rounds {
         let committed = round - 1;
+        // The cap width is a parameter; a prover-chosen width would let the
+        // proof describe a differently-shaped tree than the one committed.
+        if proof.caps[committed].len() != 1usize << params.cap_log {
+            return None;
+        }
         if crate::transcript::hash_many(b"cap", &proof.caps[committed]) != proof.roots[committed] {
             return None;
         }
@@ -314,7 +319,14 @@ pub fn check_queries(
             // leaf, and the Merkle check fails — that is what makes the
             // chain of layers binding.
             let slot = position / count;
-            if opening.coset_values.len() + 1 != fiber || slot >= fiber {
+            // Pin the path to this round's real tree depth: `count` leaves
+            // minus the cap layers. Any other length describes a tree of a
+            // different shape than the one the parameters commit to.
+            let expected_depth = (count.ilog2() - params.cap_log) as usize;
+            if opening.coset_values.len() + 1 != fiber
+                || slot >= fiber
+                || opening.path.siblings.len() != expected_depth
+            {
                 return false;
             }
             let mut coset_values = opening.coset_values.clone();

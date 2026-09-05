@@ -174,7 +174,7 @@ fn bench_loquat(iterations: u32) {
         let message = format!("benchmark message for post quantum signatures #{i}");
 
         let start = Instant::now();
-        let signature = loquat::sig::sign(&params, &secret, message.as_bytes());
+        let signature = loquat::sig::sign(&params, &secret, &public, message.as_bytes());
         sign_total += start.elapsed();
 
         let start = Instant::now();

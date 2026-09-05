@@ -167,7 +167,7 @@ fn batched_value_at(
     total
 }
 
-pub fn sign(params: &Params, secret: &SecretKey, message: &[u8]) -> Signature {
+pub fn sign(params: &Params, secret: &SecretKey, public: &PublicKey, message: &[u8]) -> Signature {
     let fiber = 1usize << params.eta;
     let leaf_count = params.leaf_count();
     let h_generator = params.h_generator();
@@ -176,6 +176,11 @@ pub fn sign(params: &Params, secret: &SecretKey, message: &[u8]) -> Signature {
     let masked_degree = params.kappa * fiber;
 
     let mut transcript = Transcript::new(b"loquat-signature");
+    // Bind the public key into every challenge. The paper's hash chain
+    // (H_1 = H(root_c, T, msg)) does not list pk, which would let a valid
+    // signature also verify under any pk' agreeing on just the B queried
+    // bits — a key-substitution attack. Absorbing pk closes that.
+    transcript.absorb_bytes(b"pk", public.as_bytes());
 
     // --- Phase 1: commit to the key blinded by fresh randomness ---------
     // Paper Alg. 4, Phase 1: c_j = (K r_1, r_1, ..., K r_m, r_m),
@@ -417,6 +422,17 @@ pub fn verify(params: &Params, public: &PublicKey, message: &[u8], signature: &S
     if public.len() != params.l {
         return false;
     }
+    // Pin the tree shape before doing any hashing: the cap width is a
+    // parameter, not the prover's choice. Without this, signatures built
+    // over differently-capped trees verify, and the verifier's work scales
+    // with whatever cap the prover ships.
+    let cap_width = 1usize << params.cap_log;
+    if signature.cap_c.len() != cap_width
+        || signature.cap_s.len() != cap_width
+        || signature.cap_h.len() != cap_width
+    {
+        return false;
+    }
     if hash_many(b"cap", &signature.cap_c) != signature.root_c
         || hash_many(b"cap", &signature.cap_s) != signature.root_s
         || hash_many(b"cap", &signature.cap_h) != signature.root_h
@@ -428,6 +444,7 @@ pub fn verify(params: &Params, public: &PublicKey, message: &[u8], signature: &S
     // Paper Alg. 7, Step 1: rebuild the hash chain from roots and plaintext
     // messages, expanding each round's challenges from it.
     let mut transcript = Transcript::new(b"loquat-signature");
+    transcript.absorb_bytes(b"pk", public.as_bytes());
     transcript.absorb_hash(b"root-c", &signature.root_c);
     transcript.absorb_bits(b"T", &signature.t_bits);
     transcript.absorb_bytes(b"msg", message);
@@ -500,9 +517,16 @@ pub fn verify(params: &Params, public: &PublicKey, message: &[u8], signature: &S
         let (s_values, s_path) = &signature.open_s[query];
         let (h_values, h_path) = &signature.open_h[query];
 
+        // Pin every path to the depth the committed trees actually have
+        // (leaves at u_size / 2^eta, minus the cap layers). A path of any
+        // other length can only describe a different tree shape.
+        let expected_depth = (params.u_log - params.eta - params.cap_log) as usize;
         if c_values.len() != params.n * fiber
             || s_values.len() != fiber
             || h_values.len() != fiber
+            || c_path.siblings.len() != expected_depth
+            || s_path.siblings.len() != expected_depth
+            || h_path.siblings.len() != expected_depth
         {
             return false;
         }
@@ -565,7 +589,7 @@ mod tests {
     fn honest_signature_verifies() {
         let params = Params::testing();
         let (secret, public) = keys::generate(&params);
-        let signature = sign(&params, &secret, b"hello loquat");
+        let signature = sign(&params, &secret, &public, b"hello loquat");
         assert!(verify(&params, &public, b"hello loquat", &signature));
     }
 
@@ -573,24 +597,65 @@ mod tests {
     fn signature_does_not_verify_for_a_different_message() {
         let params = Params::testing();
         let (secret, public) = keys::generate(&params);
-        let signature = sign(&params, &secret, b"original");
+        let signature = sign(&params, &secret, &public, b"original");
         assert!(!verify(&params, &public, b"tampered", &signature));
     }
 
     #[test]
     fn signature_does_not_verify_under_a_different_key() {
         let params = Params::testing();
-        let (secret, _) = keys::generate(&params);
+        let (secret, public) = keys::generate(&params);
         let (_, other_public) = keys::generate(&params);
-        let signature = sign(&params, &secret, b"hello");
+        let signature = sign(&params, &secret, &public, b"hello");
         assert!(!verify(&params, &other_public, b"hello", &signature));
+    }
+
+    #[test]
+    fn a_key_differing_only_at_an_unqueried_bit_is_rejected() {
+        // Only B of the L public-key bits are ever queried by the Legendre
+        // checks. Before the transcript absorbed the public key, a
+        // signature also verified under any key agreeing on just those
+        // queried bits — a key-substitution attack. Flip a bit the
+        // signature never queries and check the absorption catches it.
+        let params = Params::testing();
+        let (secret, public) = keys::generate(&params);
+        let signature = sign(&params, &secret, &public, b"hello");
+        assert!(verify(&params, &public, b"hello", &signature));
+
+        // Recover the queried indices exactly as verify derives them.
+        let mut transcript = Transcript::new(b"loquat-signature");
+        transcript.absorb_bytes(b"pk", public.as_bytes());
+        transcript.absorb_hash(b"root-c", &signature.root_c);
+        transcript.absorb_bits(b"T", &signature.t_bits);
+        transcript.absorb_bytes(b"msg", b"hello");
+        let queried = transcript.challenge_indices(b"I", params.b, params.l);
+
+        let unqueried = (0..params.l).find(|i| !queried.contains(i)).unwrap();
+        let mut other = public.clone();
+        other.flip_bit(unqueried);
+        assert!(!verify(&params, &other, b"hello", &signature));
+    }
+
+    #[test]
+    fn a_signature_over_differently_capped_trees_is_rejected() {
+        // The cap width and path depths are parameters, not the prover's
+        // choice. A signature built over trees with a different cap must
+        // not verify against the canonical parameters.
+        let params = Params::testing();
+        let (secret, public) = keys::generate(&params);
+        for wrong_cap in [0u32, 2] {
+            let mut other = params.clone();
+            other.cap_log = wrong_cap;
+            let signature = sign(&other, &secret, &public, b"hello");
+            assert!(!verify(&params, &public, b"hello", &signature));
+        }
     }
 
     #[test]
     fn tampering_with_o_values_is_caught() {
         let params = Params::testing();
         let (secret, public) = keys::generate(&params);
-        let mut signature = sign(&params, &secret, b"hello");
+        let mut signature = sign(&params, &secret, &public, b"hello");
         signature.o_values[0] = signature.o_values[0] + Fp::new(1);
         assert!(!verify(&params, &public, b"hello", &signature));
     }
@@ -599,7 +664,7 @@ mod tests {
     fn tampering_with_t_bits_is_caught() {
         let params = Params::testing();
         let (secret, public) = keys::generate(&params);
-        let mut signature = sign(&params, &secret, b"hello");
+        let mut signature = sign(&params, &secret, &public, b"hello");
         signature.t_bits[3] ^= 1;
         assert!(!verify(&params, &public, b"hello", &signature));
     }
@@ -610,7 +675,7 @@ mod tests {
         // refused outright rather than silently treated as a residue.
         let params = Params::testing();
         let (secret, public) = keys::generate(&params);
-        let mut signature = sign(&params, &secret, b"hello");
+        let mut signature = sign(&params, &secret, &public, b"hello");
         signature.o_values[0] = Fp::ZERO;
         assert!(!verify(&params, &public, b"hello", &signature));
     }
@@ -619,7 +684,7 @@ mod tests {
     fn tampering_with_openings_is_caught() {
         let params = Params::testing();
         let (secret, public) = keys::generate(&params);
-        let mut signature = sign(&params, &secret, b"hello");
+        let mut signature = sign(&params, &secret, &public, b"hello");
         signature.open_c[0].0[0] = signature.open_c[0].0[0] + Fp2::ONE;
         assert!(!verify(&params, &public, b"hello", &signature));
     }
@@ -628,7 +693,7 @@ mod tests {
     fn tampering_with_the_mask_opening_is_caught() {
         let params = Params::testing();
         let (secret, public) = keys::generate(&params);
-        let mut signature = sign(&params, &secret, b"hello");
+        let mut signature = sign(&params, &secret, &public, b"hello");
         signature.open_s[0].0[0] = signature.open_s[0].0[0] + Fp2::ONE;
         assert!(!verify(&params, &public, b"hello", &signature));
     }
@@ -637,7 +702,7 @@ mod tests {
     fn tampering_with_the_h_path_is_caught() {
         let params = Params::testing();
         let (secret, public) = keys::generate(&params);
-        let mut signature = sign(&params, &secret, b"hello");
+        let mut signature = sign(&params, &secret, &public, b"hello");
         signature.open_h[0].1.siblings[0][0] ^= 1;
         assert!(!verify(&params, &public, b"hello", &signature));
     }
@@ -651,7 +716,7 @@ mod tests {
     fn tampering_with_an_h_value_is_caught() {
         let params = Params::testing();
         let (secret, public) = keys::generate(&params);
-        let mut signature = sign(&params, &secret, b"hello");
+        let mut signature = sign(&params, &secret, &public, b"hello");
         signature.open_h[0].0[0] = signature.open_h[0].0[0] + Fp2::ONE;
         assert!(!verify(&params, &public, b"hello", &signature));
     }
@@ -663,7 +728,7 @@ mod tests {
         // so Fiat-Shamir catches it instead.
         let params = Params::testing();
         let (secret, public) = keys::generate(&params);
-        let mut signature = sign(&params, &secret, b"hello");
+        let mut signature = sign(&params, &secret, &public, b"hello");
         signature.cap_h[0][0] ^= 1;
         signature.root_h = hash_many(b"cap", &signature.cap_h);
         assert!(!verify(&params, &public, b"hello", &signature));
@@ -673,7 +738,7 @@ mod tests {
     fn tampering_with_the_mask_sum_is_caught() {
         let params = Params::testing();
         let (secret, public) = keys::generate(&params);
-        let mut signature = sign(&params, &secret, b"hello");
+        let mut signature = sign(&params, &secret, &public, b"hello");
         signature.sum_mask = signature.sum_mask + Fp2::ONE;
         assert!(!verify(&params, &public, b"hello", &signature));
     }
@@ -767,8 +832,8 @@ mod tests {
         // message must differ while both verifying.
         let params = Params::testing();
         let (secret, public) = keys::generate(&params);
-        let a = sign(&params, &secret, b"same message");
-        let b = sign(&params, &secret, b"same message");
+        let a = sign(&params, &secret, &public, b"same message");
+        let b = sign(&params, &secret, &public, b"same message");
         assert_ne!(a.o_values, b.o_values);
         assert!(verify(&params, &public, b"same message", &a));
         assert!(verify(&params, &public, b"same message", &b));

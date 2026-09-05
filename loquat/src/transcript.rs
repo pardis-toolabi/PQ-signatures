@@ -113,6 +113,9 @@ impl Transcript {
         Update::update(&mut shake, &self.state);
         Update::update(&mut shake, &(label.len() as u64).to_le_bytes());
         Update::update(&mut shake, label);
+        // Bind the requested length too, so two draws at the same state
+        // with different lengths cannot share a prefix.
+        Update::update(&mut shake, &(len as u64).to_le_bytes());
 
         let mut output = vec![0u8; len + 32];
         shake.finalize_xof().read(&mut output);

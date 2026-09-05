@@ -20,7 +20,8 @@ use crate::field::{Fp, P};
 use crate::params::Params;
 use rand::RngCore;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+// No Debug: a derived one would print the key on any `{:?}`.
+#[derive(Clone, PartialEq, Eq)]
 pub struct SecretKey {
     pub k: Fp,
 }
@@ -48,6 +49,18 @@ impl PublicKey {
 
     pub fn size_bytes(&self) -> usize {
         self.bits.len()
+    }
+
+    /// The packed bits, for absorbing the key into a transcript.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bits
+    }
+
+    /// Test-only: flip one bit, to build a key that agrees with the real
+    /// one everywhere except a chosen index.
+    #[cfg(test)]
+    pub(crate) fn flip_bit(&mut self, index: usize) {
+        self.bits[index / 8] ^= 1 << (index % 8);
     }
 }
 

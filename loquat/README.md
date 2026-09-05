@@ -318,6 +318,15 @@ sound; this follows the paper instead:
 - Sizes are computed from the struct layout (`size_bytes`), not from a
   byte serializer — none exists. The arithmetic is honest, but no wire
   format has ever been round-tripped.
+- The transcript absorbs the **public key** before anything else, which
+  the paper's hash chain (`H_1 = H(root_c, T, msg)`) does not list.
+  Without it, a signature also verifies under any key agreeing on just
+  the `B` queried bits out of `L` — a key-substitution attack. A test
+  flips a single unqueried bit and checks the absorption catches it.
+- The verifier pins the Merkle **cap width and every path depth** to the
+  parameters. The paper leaves proof shape implicit; without the pin,
+  signatures built over differently-capped trees verified, and verifier
+  work scaled with whatever path length the prover shipped.
 
 **What this is not.** It has no reference test vectors to check against —
 none are published for Loquat, so "passes its own tests" is genuinely

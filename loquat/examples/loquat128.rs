@@ -17,7 +17,7 @@ fn main() {
     let message = b"loquat at the paper's 128-bit parameter set";
 
     let start = Instant::now();
-    let signature = loquat::sig::sign(&params, &secret, message);
+    let signature = loquat::sig::sign(&params, &secret, &public, message);
     let sign_time = start.elapsed();
 
     let start = Instant::now();
