@@ -9,6 +9,33 @@ wraps a real proof system around it.
 It is the most involved thing in this repository by a wide margin. Read
 `../leansig/README.md` first if you want the gentle version.
 
+## What if your one-way function isn't a hash?
+
+Every other signature here starts from "hashing is easy, un-hashing is
+hard". Loquat starts from a different asymmetry, one that comes from
+number theory rather than bit-mixing: **telling squares from non-squares
+modulo a prime.**
+
+Take `p = 7` and square everything: `1² = 1`, `2² = 4`, `3² = 2`,
+`4² = 2`, `5² = 4`, `6² = 1`. So the squares mod 7 are `{1, 2, 4}` and
+the non-squares are `{3, 5, 6}`. Each non-zero number gets a single bit:
+*square* or *not*. Computing that bit is easy. But now hide a secret
+offset `K` inside: the sequence of bits
+
+```
+is K+1 a square?  is K+2 a square?  is K+3 a square?  ...
+```
+
+looks completely random to anyone who does not know `K` — that is the
+conjecture (dating back to Damgård in 1988, see References) that this
+whole scheme stands on. A function that is easy to evaluate with the key
+and looks random without it is a **PRF** — the Legendre PRF. Where a
+hash-based scheme proves "I know a preimage", Loquat proves "I know the
+`K` behind these bits". The payoff for the extra machinery: the key signs
+unlimited messages with no state, and verification is mostly field
+arithmetic, which is cheap *inside a SNARK* — the very place hash-based
+signatures get expensive.
+
 ## The one-way function
 
 Pick a prime `p`. For any non-zero `a`, ask a single yes/no question: **is
@@ -60,6 +87,17 @@ L_0(o)  =  L_0(K + I) + L_0(r)  =  pk_I + T   (mod 2)
 
 `r` hides `K` completely, and the check costs a single symbol evaluation.
 This is the only place the public key is touched.
+
+Worked example, with `p = 7` again (squares `{1,2,4}`, non-squares
+`{3,5,6}`): say `K + a = 3` — a non-square, so its bit is 1 — and the
+signer picks `r = 5`, also a non-square, bit 1. The published value is
+`o = 3 * 5 = 15 = 1 (mod 7)`, and 1 *is* a square, bit 0. The check:
+`bit(o) = bit(K+a) XOR bit(r) = 1 XOR 1 = 0` — matches. Non-square times
+non-square is a square, just as minus times minus is plus; the two
+unknown bits cancel into one the verifier can test.
+
+In the paper this is §2.3 and Algorithm 1; in this code it is Phase 2 of
+`sig::sign` and Step 3 of `sig::verify`.
 
 But there is a hole: nothing so far stops a cheater from using a
 *different* `K` for each of the 128 values it publishes. Closing that hole
@@ -146,6 +184,24 @@ catches it with constant probability.
 `fri.rs` tests this from both sides: honest low-degree codewords pass,
 while high-degree codewords, random junk, and tampered openings are all
 rejected.
+
+## Where this lives in the code
+
+Section and algorithm numbers refer to the ePrint paper (2024/868).
+
+| Concept | Code | Paper |
+|---------|------|-------|
+| Legendre PRF, `L_0` and `L_K` | `field.rs` (`Fp::legendre_bit`), `keys.rs` | §3.1 |
+| Key generation (`K + I_l != 0`) | `keys::generate` | Alg. 3, §4.2 |
+| Setup / parameter choices | `params.rs` | Alg. 2, §6.1, Table 3 |
+| Blinded residuosity `o = (K+I)*r` | `sig::sign` Phase 2 | §2.3, Alg. 4 |
+| The `c`/`q` interleaving collapse | `sig::sign` Phase 1/3, `build_q_polynomials` | §2.3, Alg. 1 & 4 |
+| ZK mask `s`, split `f' = g + Z_H*h` | `sig::sign` Phases 3-4 | Alg. 5 |
+| Rate lift `rho_1..rho_4`, batching | `Params::degree_bounds`, `sig::sign` Phase 5 | Alg. 5, Phase 5 |
+| FRI fold, final-degree bound | `fri::prove`, `fri::fold` | Alg. 6 |
+| Verify: hash chain, `p(s)`, checks | `sig::verify`, `fri::replay_transcript`, `fri::check_queries` | Alg. 7 |
+| Merkle leaves-by-fiber, tree cap | `merkle.rs` | §4.3 |
+| Fiat-Shamir compilation | `transcript.rs` | §4.2 (BCS transform) |
 
 ## Parameters (Loquat-128)
 
@@ -273,3 +329,35 @@ whole reason Loquat is interesting for SNARKs.
 
 **Do not use this to protect anything.** It is here to make the scheme
 legible.
+
+## References
+
+- **Loquat**: Xinyu Zhang, Ron Steinfeld, Muhammed F. Esgin, Joseph K.
+  Liu, Dongxi Liu, Sushmita Ruj. *Loquat: A SNARK-Friendly Post-Quantum
+  Signature based on the Legendre PRF with Applications in Ring and
+  Aggregate Signatures.* CRYPTO 2024; IACR ePrint
+  [2024/868](https://eprint.iacr.org/2024/868). All section and algorithm
+  numbers in this crate refer to the ePrint version.
+- **Legendre PRF origin**: Ivan Damgård. *On the Randomness of Legendre
+  and Jacobi Sequences.* CRYPTO 1988 — proposed there as a pseudorandom
+  *generator*; Grassi et al. (CCS 2016) later suggested the keyed form as
+  an MPC-friendly PRF.
+- **LegRoast**: Ward Beullens, Cyprien Delpech de Saint Guilhem.
+  *LegRoast: Efficient Post-Quantum Signatures from the Legendre PRF.*
+  PQCrypto 2020. The MPC-in-the-head predecessor Loquat departs from; the
+  field `p = 2^127 - 1` and the `L`, `B`, `beta` parameter choices follow
+  it.
+- **Univariate sumcheck**: Eli Ben-Sasson, Alessandro Chiesa, Michael
+  Riabzev, Nicholas Spooner, Madars Virza, Nicholas P. Ward. *Aurora:
+  Transparent Succinct Arguments for R1CS.* EUROCRYPT 2019. The sumcheck
+  construction Loquat builds on (its §3.2 credits this paper, including
+  the masking and amortisation techniques).
+- **FRI**: Eli Ben-Sasson, Iddo Bentov, Yinon Horesh, Michael Riabzev.
+  *Fast Reed-Solomon Interactive Oracle Proofs of Proximity.* ICALP 2018.
+  The low-degree test; Loquat's parameter sets use its Conjecture 1.5
+  soundness (the paper's more conservative Loquat* uses proven bounds
+  instead).
+- **BCS transform**: Eli Ben-Sasson, Alessandro Chiesa, Nicholas Spooner.
+  *Interactive Oracle Proofs.* TCC 2016. How the interactive protocol
+  becomes a non-interactive signature (the hash chain in
+  `transcript.rs`).

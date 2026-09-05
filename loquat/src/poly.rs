@@ -2,6 +2,10 @@
 //! on multiplicative cosets.
 //!
 //! Coefficients are stored lowest-degree-first.
+//!
+//! Reference: this is the machinery under the paper's univariate sumcheck
+//! (§3.2), which Loquat takes from Aurora — Ben-Sasson, Chiesa, Riabzev,
+//! Spooner, Virza, Ward (EUROCRYPT 2019), the paper's [11].
 
 use crate::field::{subgroup_generator, Fp2};
 

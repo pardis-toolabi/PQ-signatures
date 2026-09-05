@@ -10,6 +10,10 @@
 //!    run there. But `p + 1 = 2^127`, so `F_p2` has subgroups of order up
 //!    to `2^128`. That is why Loquat does its polynomial work in the
 //!    extension field even though the Legendre PRF itself lives in `F_p`.
+//!
+//! Reference: paper §6.1 "Choice of the field" (p = 2^127 - 1 as in
+//! LegRoast; F_p2 for its smooth multiplicative subgroups) and Algorithm 2
+//! line 9, which fixes F = F_p2.
 
 use std::ops::{Add, Mul, Neg, Sub};
 

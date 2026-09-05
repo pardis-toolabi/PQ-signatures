@@ -1,5 +1,7 @@
 //! Loquat: a SNARK-friendly post-quantum signature built on the Legendre
-//! PRF (IACR ePrint 2024/868).
+//! PRF (Zhang, Steinfeld, Esgin, Liu, Liu, Ruj; IACR ePrint 2024/868,
+//! CRYPTO 2024). Section and algorithm numbers cited throughout this crate
+//! refer to the ePrint version.
 //!
 //! Work in progress. See README.md for exactly which parts are
 //! implemented and validated, and which are not.

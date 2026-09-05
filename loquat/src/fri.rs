@@ -11,6 +11,12 @@
 //! low-degree polynomial folds consistently no matter which challenge is
 //! picked; a codeword that is far from low-degree does not, and each query
 //! catches it with constant probability.
+//!
+//! Reference: FRI is Ben-Sasson, Bentov, Horesh, Riabzev (ICALP 2018), the
+//! paper's [8]. This module implements the paper's Algorithm 6 (Sign Part
+//! III: Phase 6 folding, Phase 7 query) and the LDT side of Algorithm 7,
+//! with one documented deviation: layer 0 is virtual (see `Proof`), where
+//! the paper ships `rootf^(0)`.
 
 use crate::field::Fp2;
 use crate::merkle::{verify_with_cap, MerklePath, MerkleTree};
@@ -94,6 +100,9 @@ fn fiber_values(codeword: &[Fp2], fiber: usize, k: usize) -> Vec<Fp2> {
 }
 
 /// Folds one layer into the next using the round challenge.
+///
+/// Paper Alg. 6, Phase 6: interpolate `P_y` through each fiber `S_y` and
+/// evaluate it at the round challenge `x^(i)`.
 fn fold(params: &Params, codeword: &[Fp2], challenge: Fp2, log_size: u32) -> Vec<Fp2> {
     let fiber = 1usize << params.eta;
     let n = codeword.len();
@@ -148,7 +157,8 @@ pub fn prove(
         layers.push(fold(params, &current, challenge, log_size));
     }
 
-    // The last layer is small enough to send in the clear.
+    // The last layer is small enough to send in the clear. Paper Alg. 6
+    // lines 13-14: only the first d + 1 = rho* * |U^(r)| coefficients.
     let final_layer = layers.last().unwrap();
     let final_log = params.u_log - params.eta * params.rounds as u32;
     let mut final_coefficients = interpolate_over_coset(final_layer, Fp2::ONE, final_log);
@@ -221,7 +231,8 @@ pub fn replay_transcript(
     // is where it is enforced: the honest prover truncates to this length,
     // and a verifier that accepts more coefficients accepts *any* function
     // on the final domain — every fold check then passes vacuously and the
-    // low-degree test proves nothing.
+    // low-degree test proves nothing. This is the paper's d = rho* *
+    // |U^(r)| - 1 bound from Alg. 6 line 13.
     let final_size = params.domain_size_at(params.rounds);
     let final_bound = (params.rate_numerator * final_size / params.u_size).max(1);
     if proof.final_coefficients.len() > final_bound {

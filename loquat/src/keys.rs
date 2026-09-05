@@ -11,6 +11,10 @@
 //! is a residue. Recovering `K` from these bits is the Legendre PRF
 //! key-recovery problem, which is believed hard even for a quantum
 //! adversary — that is the whole security foundation.
+//!
+//! Reference: paper §3.1 (the Legendre PRF and its keyed form) and
+//! Algorithm 3 (key generation), with the `K + I_l != 0` requirement
+//! stated in §4.2 just above it.
 
 use crate::field::{Fp, P};
 use crate::params::Params;

@@ -6,6 +6,10 @@
 //! together into the root. Every query then carries a shorter path, and
 //! the handful of cap nodes are sent once instead of being re-derived per
 //! query. Soundness is unchanged — the root still binds every leaf.
+//!
+//! Reference: paper §4.3 "Hash by Subset and Tree Cap" (both ideas: 2^eta
+//! values per leaf, and the capped root); the cap width t = ceil(log2(kappa)
+//! - 1) is from its Appendix C constraint count.
 
 use crate::transcript::{hash_many, hash_pair, Hash};
 

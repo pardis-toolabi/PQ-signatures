@@ -6,6 +6,12 @@
 //! proof-of-concept shortcuts that break Fiat-Shamir soundness. This
 //! module follows the paper instead: every input is absorbed in order,
 //! with domain separation, and every challenge chains the previous one.
+//!
+//! Reference: the paper compiles its interactive scheme with the BCS
+//! transform (its [12], Ben-Sasson-Chiesa-Spooner, TCC 2016) — see §4.2 —
+//! and Algorithm 7 Step 1 describes the resulting hash chain that
+//! `Transcript` implements: roots and plaintext messages absorbed round by
+//! round, each challenge expanded from the running hash.
 
 use crate::field::{Fp, Fp2};
 use sha3::digest::{ExtendableOutput, Update, XofReader};

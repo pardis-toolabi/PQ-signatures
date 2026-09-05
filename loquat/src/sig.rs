@@ -13,6 +13,11 @@
 //! with one cheap symbol evaluation. All that is left to prove is that
 //! every `o` was built from the *same* `K` — and that is a linear-algebra
 //! claim, which the univariate sumcheck plus FRI handle.
+//!
+//! Reference: paper §2.3 (the blinding-and-batching idea), §4.1 Algorithm 1
+//! (the interactive identification scheme this compiles down from), and
+//! Algorithms 4-6 for `sign` (the seven phases, marked below) with
+//! Algorithm 7 for `verify` (its three steps, likewise).
 
 use crate::field::{Fp, Fp2};
 use crate::fri;
@@ -111,6 +116,9 @@ fn fiber_indices(u_size: usize, fiber: usize, k: usize) -> Vec<usize> {
 }
 
 /// Interpolates the challenge vector `q_j` over `H`.
+///
+/// Paper Algs. 4 and 7: `q_j = (lambda_1, lambda_1 I_1, ..., lambda_m,
+/// lambda_m I_m)` — the counterpart to `c`'s `(K r, r, ...)` interleaving.
 fn build_q_polynomials(params: &Params, lambda: &[Fp], index_choices: &[usize]) -> Vec<Vec<Fp2>> {
     (0..params.n)
         .map(|j| {
@@ -170,6 +178,8 @@ pub fn sign(params: &Params, secret: &SecretKey, message: &[u8]) -> Signature {
     let mut transcript = Transcript::new(b"loquat-signature");
 
     // --- Phase 1: commit to the key blinded by fresh randomness ---------
+    // Paper Alg. 4, Phase 1: c_j = (K r_1, r_1, ..., K r_m, r_m),
+    // c'_j = c_j-interpolated + Z_H * r-hat, T_{i,j} = L_0(r_{i,j}).
     let mut r_values: Vec<Fp> = Vec::with_capacity(params.b);
     let mut t_bits: Vec<u8> = Vec::with_capacity(params.b);
     let mut c_prime: Vec<Vec<Fp2>> = Vec::with_capacity(params.n);
@@ -181,7 +191,8 @@ pub fn sign(params: &Params, secret: &SecretKey, message: &[u8]) -> Signature {
             r_values.push(r);
             t_bits.push(r.legendre_bit());
             // Interleaving K*r with r is what makes the later inner
-            // product collapse to sum(lambda * (K + I) * r).
+            // product collapse to sum(lambda * (K + I) * r) — the §2.3
+            // batching trick, Alg. 1 lines 4 and 19-21 in the paper.
             values.push(Fp2::from_base(secret.k * r));
             values.push(Fp2::from_base(r));
         }
@@ -222,6 +233,8 @@ pub fn sign(params: &Params, secret: &SecretKey, message: &[u8]) -> Signature {
     transcript.absorb_bytes(b"msg", message);
 
     // --- Phase 2: reveal the blinded residuosity values ------------------
+    // Paper Alg. 4, Phase 2: o_{i,j} = (K + I_{i,j}) * r_{i,j}, the blinded
+    // check from §2.3 — multiplicativity turns L_0(o) into pk_I + T mod 2.
     let index_choices = transcript.challenge_indices(b"I", params.b, params.l);
     let o_values: Vec<Fp> = (0..params.b)
         .map(|b| (secret.k + params.indices[index_choices[b]]) * r_values[b])
@@ -231,6 +244,8 @@ pub fn sign(params: &Params, secret: &SecretKey, message: &[u8]) -> Signature {
     transcript.absorb_fp2_slice(b"o", &o_lifted);
 
     // --- Phase 3: fold the claim into one polynomial ---------------------
+    // Paper Alg. 4, Phase 3: q_j from (lambda, I), f_j = c'_j * q_j, then
+    // f = sum_j epsilon_j f_j with claimed sum mu = sum epsilon_j lambda o.
     let lambda = transcript.challenge_fp_vec(b"lambda", params.b);
     let epsilon = transcript.challenge_fp2_vec(b"epsilon", params.n);
 
@@ -253,6 +268,8 @@ pub fn sign(params: &Params, secret: &SecretKey, message: &[u8]) -> Signature {
         mu = mu + *epsilon_j * inner;
     }
 
+    // Paper Alg. 5, Phase 3 (cont'd): the ZK mask s-hat of degree
+    // 4m + kappa*2^eta - 1, with S = sum of s-hat over H sent along.
     let mask_poly = random_poly(4 * params.m + masked_degree - 1);
     let mask_on_h =
         evaluate_on_coset_points(&mask_poly, params.h_shift, h_generator, params.h_size);
@@ -275,6 +292,8 @@ pub fn sign(params: &Params, secret: &SecretKey, message: &[u8]) -> Signature {
     transcript.absorb_fp2_slice(b"S", &[sum_mask]);
 
     // --- Phase 4: the sumcheck split -------------------------------------
+    // Paper Alg. 5, Phase 4: f' = z*f + s-hat, then f' = g + Z_H * h
+    // (Aurora's univariate sumcheck decomposition).
     let z = transcript.challenge_fp2(b"z");
     let f_prime = poly::add(&poly::scale(&f_hat, z), &mask_poly);
     let (h_poly, g_poly) = poly::divide_by_vanishing(&f_prime, params.h_size, vanishing_offset);
@@ -295,12 +314,17 @@ pub fn sign(params: &Params, secret: &SecretKey, message: &[u8]) -> Signature {
     transcript.absorb_hash(b"root-h", &root_h);
 
     // --- Phase 5: batch every codeword into one -------------------------
+    // Paper Alg. 5, Phase 5: stack the committed codewords, lift each to
+    // the common rate rho*, and take the e-weighted combination f^(0).
+    // (The paper stacks 4 rows with e in F^8; here it is per-polynomial
+    // rows with e of 2(n+3) — the README documents this deviation.)
     let e = transcript.challenge_fp2_vec(b"e", 2 * (params.n + 3));
 
     // Byott-Chapman: for a coset H and deg(g) < |H|, the sum over H is
     // |H| * g(0). So the constant term of g is pinned by the claimed sum,
     // and p_hat = (g(x) - g(0)) / x is exactly the paper's rational
-    // constraint after the |H| factors cancel.
+    // constraint (Alg. 5, Phase 5: deg(p) < 2m - 1) after the |H| factors
+    // cancel.
     let p_poly: Vec<Fp2> = if g_poly.len() > 1 { g_poly[1..].to_vec() } else { Vec::new() };
 
     let bounds = params.degree_bounds();
@@ -322,6 +346,8 @@ pub fn sign(params: &Params, secret: &SecretKey, message: &[u8]) -> Signature {
     let codeword = poly::evaluate_over_coset(&f0, Fp2::ONE, params.u_log);
 
     // --- Phases 6 and 7: low-degree test, then open at its queries -------
+    // Paper Alg. 6: FRI folding (Phase 6) and the query phase (Phase 7),
+    // which also fixes where the c/s/h trees must be opened.
     let (fri_proof, query_indices) = fri::prove(params, codeword, &mut transcript);
 
     let open_c = query_indices
@@ -399,6 +425,8 @@ pub fn verify(params: &Params, public: &PublicKey, message: &[u8], signature: &S
     }
 
     // --- Replay the transcript exactly as the signer built it ------------
+    // Paper Alg. 7, Step 1: rebuild the hash chain from roots and plaintext
+    // messages, expanding each round's challenges from it.
     let mut transcript = Transcript::new(b"loquat-signature");
     transcript.absorb_hash(b"root-c", &signature.root_c);
     transcript.absorb_bits(b"T", &signature.t_bits);
@@ -407,6 +435,8 @@ pub fn verify(params: &Params, public: &PublicKey, message: &[u8], signature: &S
     let index_choices = transcript.challenge_indices(b"I", params.b, params.l);
 
     // --- The Legendre check, the only place the public key is used -------
+    // Paper Alg. 7, Step 3: reject if o_{i,j} = 0 or
+    // L_0(o_{i,j}) != pk_{I_{i,j}} + T_{i,j} (mod 2).
     for (b, index_choice) in index_choices.iter().enumerate() {
         let o = signature.o_values[b];
         if o.is_zero() {
@@ -502,7 +532,10 @@ pub fn verify(params: &Params, public: &PublicKey, message: &[u8], signature: &S
             let f_prime_value = z * f_value + s_value;
 
             // The rational constraint `p` is never sent; the verifier
-            // derives it, which is what keeps the proof small.
+            // derives it, which is what keeps the proof small. Paper
+            // Alg. 7, Step 2:
+            //   p(s) = (|H|(z f(s) + s(s)) - |H| Z_H(s) h(s) - (z mu + S))
+            //          / (|H| s).
             let vanishing_value = point.pow(params.h_size as u128) - vanishing_offset;
             let numerator = h_size_field * f_prime_value
                 - h_size_field * vanishing_value * h_value

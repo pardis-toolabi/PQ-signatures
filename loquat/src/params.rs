@@ -3,6 +3,10 @@
 //! The concrete Loquat-128 numbers come from the paper's Table 3 and the
 //! authors' reference implementation (`Setup.py`), since several of them
 //! appear only in the code.
+//!
+//! Reference: paper Algorithm 2 (Setup: F, L, B, m, n, H, U, eta, kappa,
+//! rho*, r) and §6.1 (how each value is chosen: p = 2^127 - 1 and
+//! L = 2^15, B = 128 following LegRoast; rho* = 1/16; kappa per Table 3).
 
 use crate::field::{subgroup_generator, Fp, Fp2};
 use crate::transcript::Transcript;
@@ -146,6 +150,10 @@ impl Params {
     /// Degree bounds of the four committed codeword families, in the order
     /// they are batched: witness, ZK mask, sumcheck quotient, rational
     /// constraint.
+    ///
+    /// These are the numerators of the paper's rates (Alg. 5, Phase 5):
+    /// `rho_1 = (2m + kappa 2^eta + 1)/|U|`, `rho_2 = (4m + kappa 2^eta)/|U|`,
+    /// `rho_3 = (2m + kappa 2^eta)/|U|`, `rho_4 = (2m - 1)/|U|`.
     pub fn degree_bounds(&self) -> [usize; 4] {
         let masked = self.kappa * (1 << self.eta);
         [
